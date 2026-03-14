@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CPQ Records</title>
+    <link rel="stylesheet" href="records.css" />
+  </head>
+  <body>
+    <main class="records-app">
+      <header class="records-header">
+        <div class="records-header-left">
+          <span class="records-header-eyebrow">SF INSPECTOR</span>
+          <h1 id="title">CPQ Records</h1>
+        </div>
+        <div class="records-header-right">
+          <span id="subtitle" class="records-subtitle"></span>
+          <span id="status">—</span>
+        </div>
+      </header>
+      <section class="records-layout">
+        <aside class="records-list-panel">
+          <div class="toolbar">
+            <input id="filter" type="text" placeholder="Filter records" />
+            <button id="refresh" title="Refresh">↺</button>
+            <button id="newRecord" title="Create new record">+</button>
+          </div>
+          <div class="time-filters">
+            <button class="tf active" data-tf="">All</button>
+            <button class="tf" data-tf="oldest">Oldest</button>
+            <button class="tf" data-tf="latest">Latest</button>
+            <button class="tf" data-tf="7d">7d</button>
+          </div>
+          <div class="meta" id="listMeta"></div>
+          <div class="record-list" id="recordList"></div>
+          <button id="loadMore" style="display:none">Load more</button>
+        </aside>
+        <section class="records-main-panel">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Record</h2>
+              <div class="panel-actions">
+                <button id="delete">Delete</button>
+                <button id="save">Save</button>
+              </div>
+            </div>
+            <div class="record-form" id="recordForm"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Related Records</h2>
+            </div>
+            <div class="related-records" id="relatedRecords"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <div id="modal" class="modal-overlay" style="display:none">
+      <div class="modal-box">
+        <div class="modal-head">
+          <nav class="modal-crumb" id="modalCrumb"></nav>
+          <div class="modal-head-right">
+            <span class="modal-status" id="modalStatus"></span>
+            <button id="modalSave">Save</button>
+            <button id="modalClose">✕</button>
+          </div>
+        </div>
+        <div class="modal-body" id="modalBody"></div>
+      </div>
+    </div>
+    <script type="module" src="records.js"></script>
+  </body>
+</html>

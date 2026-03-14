@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "CPQ Fast Inspector",
+  "version": "0.1.0",
+  "description": "Minimal Salesforce CPQ side inspector for object exploration and inline edits.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "scripting",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://*.salesforce.com/*",
+    "https://*.force.com/*",
+    "https://*.my.salesforce.com/*",
+    "https://*.lightning.force.com/*",
+    "https://login.salesforce.com/*",
+    "https://test.salesforce.com/*"
+  ],
+  "action": {
+    "default_title": "CPQ Fast Inspector"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.force.com/*",
+        "https://*.my.salesforce.com/*",
+        "https://*.lightning.force.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
