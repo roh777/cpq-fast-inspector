@@ -33,6 +33,7 @@ const els = {
   refresh:  document.getElementById("refresh"),
   save:     document.getElementById("save"),
   del:      document.getElementById("delete"),
+  openSF:   document.getElementById("openSF"),
   newBtn:   document.getElementById("newRecord"),
   loadMore: document.getElementById("loadMore"),
   listMeta: document.getElementById("listMeta"),
@@ -214,25 +215,32 @@ function deriveConfig(desc) {
   const listFields = ["Id", ...desc.fields
     .filter(f => f.name !== "Id" && !SKIP_FIELDS.has(f.name) && !SKIP_TYPES.has(f.type) && f.type !== "textarea")
     .slice(0, 5).map(f => f.name)];
-  const detailFields = ["Id", ...desc.fields
-    .filter(f => (f.updateable || f.name === "Name") && !SKIP_TYPES.has(f.type))
-    .map(f => f.name)];
+  // All readable fields: editable first, then read-only (formulas, autonumber, etc.)
+  const editable   = desc.fields.filter(f => f.name !== "Id" && f.updateable && !SKIP_TYPES.has(f.type));
+  const readOnly   = desc.fields.filter(f => f.name !== "Id" && !f.updateable && !SKIP_FIELDS.has(f.name) && !SKIP_TYPES.has(f.type));
+  const detailFields = ["Id", ...editable.map(f => f.name), ...readOnly.map(f => f.name)];
   return (desc._cfg = { listFields, detailFields });
 }
 
 function getTableCols(desc) {
   return desc.fields
     .filter(f => f.updateable && !SKIP_FIELDS.has(f.name) && !SKIP_TYPES.has(f.type) && f.type !== "textarea")
-    .slice(0, 6).map(f => f.name);
+    .map(f => f.name);
 }
 
 // ── Related groups ────────────────────────────────────────────────────────
 
 function initRelatedGroups(desc) {
-  state.relatedGroups = desc.childRelationships
-    .filter(r => r.relationshipName && !SKIP_CHILD.test(r.childSObject))
-    .slice(0, 30)
-    .map(r => ({ ...r, count: null }));
+  const all = desc.childRelationships
+    .filter(r => r.relationshipName && !SKIP_CHILD.test(r.childSObject));
+  // Prioritize SBQQ relationships, then alphabetical
+  all.sort((a, b) => {
+    const aS = a.childSObject.startsWith("SBQQ__") ? 0 : 1;
+    const bS = b.childSObject.startsWith("SBQQ__") ? 0 : 1;
+    if (aS !== bS) return aS - bS;
+    return a.relationshipName.localeCompare(b.relationshipName);
+  });
+  state.relatedGroups = all.map(r => ({ ...r, count: null }));
   renderRelated();
   loadRelatedCounts(state.selected.Id);
 }
@@ -294,12 +302,37 @@ function renderList() {
   els.loadMore.style.display = state.nextUrl ? "block" : "none";
 }
 
+// Renders fields split into editable + read-only sections with a divider
+function renderFieldSections(fields, desc, rec, inputValues, creating) {
+  const editableHtml = [];
+  const readOnlyHtml = [];
+  fields.forEach(field => {
+    const meta  = desc.fieldMap[field];
+    const orig  = rec?.[field] ?? null;
+    const cur   = inputValues[field] ?? null;
+    const dirty = !creating && orig !== cur;
+    const html  = `<div class="field${dirty ? " field-dirty" : ""}">${renderInput(field, cur, meta)}</div>`;
+    if (field === "Id" || !meta?.updateable) readOnlyHtml.push(html);
+    else editableHtml.push(html);
+  });
+  const divider = readOnlyHtml.length
+    ? `<div class="fields-ro-divider">Read-only fields</div>`
+    : "";
+  return editableHtml.join("") + divider + readOnlyHtml.join("");
+}
+
 function renderForm() {
   const creating = state.isNew;
   const rec = state.selected;
   els.save.textContent = creating ? "create" : "save";
   els.del.disabled = !rec || creating;
   els.del.style.display = creating ? "none" : "";
+  if (rec && !creating && host) {
+    els.openSF.href = `${host}/lightning/r/${objectName}/${rec.Id}/view`;
+    els.openSF.style.display = "";
+  } else {
+    els.openSF.style.display = "none";
+  }
 
   if (!rec && !creating) {
     els.recordForm.innerHTML = "<div class=\"meta\">select a record or click + New</div>";
@@ -313,14 +346,7 @@ function renderForm() {
     ? cfg.detailFields.filter(f => f !== "Id")
     : cfg.detailFields.filter(f => f in rec);
 
-  els.recordForm.innerHTML = fields.map(field => {
-    const meta  = desc.fieldMap[field];
-    const orig  = rec?.[field] ?? null;
-    const cur   = state.inputValues[field] ?? null;
-    const dirty = !creating && orig !== cur;
-    return `<div class="field${dirty ? " field-dirty" : ""}">${renderInput(field, cur, meta)}</div>`;
-  }).join("");
-
+  els.recordForm.innerHTML = renderFieldSections(fields, desc, rec, state.inputValues, creating);
   wireFormEvents(els.recordForm, desc, state.inputValues, rec);
 }
 
@@ -345,13 +371,17 @@ function renderRelated() {
 // ── Field rendering ───────────────────────────────────────────────────────
 
 function renderInput(field, value, meta) {
+  const ro = field === "Id" || !meta?.updateable;
   const a = `data-field="${escapeHtml(field)}"`;
   const v = value ?? "";
   const type = meta?.type;
   const lbl = `<label>${escapeHtml(meta?.label || field)}</label>`;
 
-  if (field === "Id")
-    return `${lbl}<input ${a} value="${escapeAttribute(String(v))}" readonly>`;
+  if (ro) {
+    // Read-only: render as plain disabled input regardless of type
+    const display = (type === "reference" && state.lookupNames[v]) ? state.lookupNames[v] : String(v);
+    return `${lbl}<input ${a} value="${escapeAttribute(display)}" readonly class="field-ro">`;
+  }
   if (type === "boolean")
     return `${lbl}<label class="cb-wrap"><input type="checkbox" ${a}${value ? " checked" : ""}><span>${value ? "true" : "false"}</span></label>`;
   if (type === "picklist") {
@@ -406,6 +436,7 @@ function wireFormEvents(container, desc, inputValues, originalRecord) {
   container.querySelectorAll("[data-field]").forEach(el => {
     const field = el.dataset.field;
     const meta  = desc.fieldMap[field];
+    if (el.readOnly || el.disabled || field === "Id") return; // skip read-only fields
     const ev    = el.type === "checkbox" ? "change" : "input";
     el.addEventListener(ev, () => {
       let val;
@@ -598,14 +629,7 @@ function renderDetailFrame(frame) {
   const fields = cfg.detailFields.filter(f => f in record);
   els.modalSave.style.display = "";
 
-  const formHtml = `<div class="modal-detail-form">${
-    fields.map(field => {
-      const meta  = desc.fieldMap[field];
-      const cur   = inputValues[field] ?? null;
-      const dirty = record[field] !== cur;
-      return `<div class="field${dirty ? " field-dirty" : ""}">${renderInput(field, cur, meta)}</div>`;
-    }).join("")
-  }</div>`;
+  const formHtml = `<div class="modal-detail-form">${renderFieldSections(fields, desc, record, inputValues, false)}</div>`;
 
   const relHtml = relatedGroups.length ? `<div class="modal-related-list">
     <div class="modal-section-head">Related</div>
