@@ -455,11 +455,30 @@ select[multiple] { height: auto; min-height: 60px; }
   padding: 8px;
 }
 
+.rel-group-header {
+  width: 100%;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 4px 2px 2px;
+  margin-top: 2px;
+}
+.rel-group-header:first-child { margin-top: 0; }
+
 .rel-group {
   border: 1px solid var(--border);
   border-radius: 20px;
   background: #f8fafc;
   transition: background .1s, border-color .1s;
+}
+.rel-group.rel-pending {
+  opacity: 0.5;
+}
+.rel-group.rel-has-records {
+  border-color: var(--accent);
+  background: var(--accent-bg);
 }
 .rel-head {
   display: flex;
@@ -475,6 +494,7 @@ select[multiple] { height: auto; min-height: 60px; }
   user-select: none;
   white-space: nowrap;
 }
+.rel-has-records .rel-head { color: var(--accent-dark); }
 .rel-head:hover { background: var(--accent-bg); color: var(--accent); border-radius: 20px; }
 .rel-group:hover { border-color: var(--accent); }
 
@@ -514,7 +534,8 @@ select[multiple] { height: auto; min-height: 60px; }
   letter-spacing: 0;
   flex-shrink: 0;
 }
-.rel-group:hover .rel-badge { background: var(--accent); }
+.rel-has-records .rel-badge { background: var(--accent); }
+.rel-group:hover .rel-badge { background: var(--accent-dark); }
 .rel-name { flex: 0 1 auto; }
 .rel-edit-btn {
   padding: 2px 6px;

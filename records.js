@@ -33,6 +33,7 @@ const els = {
   refresh:  document.getElementById("refresh"),
   save:     document.getElementById("save"),
   del:      document.getElementById("delete"),
+  clone:    document.getElementById("clone"),
   openSF:   document.getElementById("openSF"),
   newBtn:   document.getElementById("newRecord"),
   loadMore: document.getElementById("loadMore"),
@@ -66,6 +67,7 @@ async function boot() {
   els.save.addEventListener("click", saveRecord);
   els.del.addEventListener("click", deleteRecord);
   els.newBtn.addEventListener("click", startNew);
+  els.clone.addEventListener("click", cloneRecord);
   els.loadMore.addEventListener("click", loadMore);
 
   // Time filter buttons
@@ -148,6 +150,20 @@ async function loadSelectedRecord(id) {
 function startNew() {
   state.selected = null; state.inputValues = {}; state.isNew = true; state.relatedGroups = [];
   renderList(); renderForm(); renderRelated();
+}
+
+function cloneRecord() {
+  if (!state.selected) return;
+  const desc = state.cache[objectName];
+  if (!desc) return;
+  // Copy only updateable field values; drop Id and read-only fields
+  const cloned = {};
+  desc.fields.forEach(f => {
+    if (f.updateable && state.selected[f.name] != null) cloned[f.name] = state.selected[f.name];
+  });
+  state.selected = null; state.inputValues = cloned; state.isNew = true; state.relatedGroups = [];
+  renderList(); renderForm(); renderRelated();
+  setStatus("cloned — edit and click create");
 }
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
@@ -251,8 +267,7 @@ function loadRelatedCounts(parentId) {
       .then(r => {
         if (!state.relatedGroups[i]) return;
         state.relatedGroups[i].count = r.totalSize;
-        const badge = els.relatedRecords.querySelector(`[data-rel-badge="${i}"]`);
-        if (badge) badge.textContent = r.totalSize;
+        renderRelated(); // re-sort and re-render with updated counts
       }).catch(() => {});
   });
 }
@@ -266,6 +281,22 @@ async function resolveLookups(record, desc) {
     .forEach(f => { const t = f.referenceTo?.[0]; if (t) (byObj[t] ||= []).push(record[f.name]); });
   await Promise.allSettled(Object.entries(byObj).map(async ([obj, ids]) => {
     const recs = await query(`SELECT Id, Name FROM ${obj} WHERE Id IN (${ids.map(id=>`'${id}'`).join(",")})`)
+      .catch(() => []);
+    recs.forEach(r => { state.lookupNames[r.Id] = r.Name || r.Id; });
+  }));
+}
+
+async function resolveLookupsForRecords(records, desc) {
+  const byObj = {};
+  desc.fields.filter(f => f.type === "reference").forEach(f => {
+    const t = f.referenceTo?.[0];
+    if (!t) return;
+    records.forEach(r => {
+      if (r[f.name] && !state.lookupNames[r[f.name]]) (byObj[t] ||= new Set()).add(r[f.name]);
+    });
+  });
+  await Promise.allSettled(Object.entries(byObj).map(async ([obj, ids]) => {
+    const recs = await query(`SELECT Id, Name FROM ${obj} WHERE Id IN (${[...ids].map(id=>`'${id}'`).join(",")})`)
       .catch(() => []);
     recs.forEach(r => { state.lookupNames[r.Id] = r.Name || r.Id; });
   }));
@@ -330,8 +361,10 @@ function renderForm() {
   if (rec && !creating && host) {
     els.openSF.href = `${host}/lightning/r/${objectName}/${rec.Id}/view`;
     els.openSF.style.display = "";
+    els.clone.style.display = "";
   } else {
     els.openSF.style.display = "none";
+    els.clone.style.display = "none";
   }
 
   if (!rec && !creating) {
@@ -354,15 +387,44 @@ function renderRelated() {
   if (!state.selected || state.isNew) { els.relatedRecords.innerHTML = "<div class=\"meta\">—</div>"; return; }
   if (!state.relatedGroups.length)    { els.relatedRecords.innerHTML = "<div class=\"meta\">none</div>"; return; }
 
-  els.relatedRecords.innerHTML = state.relatedGroups.map((g, i) =>
-    `<div class="rel-group">
+  // Split into CPQ and standard buckets, preserving original indices
+  const cpq = [], std = [];
+  state.relatedGroups.forEach((g, i) =>
+    (g.childSObject.startsWith("SBQQ__") ? cpq : std).push({ g, i })
+  );
+
+  // Sort: count>0 first (desc), then count=0, then still-loading (null), then alpha
+  const sortBucket = arr => [...arr].sort((a, b) => {
+    const rank = x => x.g.count > 0 ? 0 : x.g.count === 0 ? 1 : 2;
+    const ra = rank(a), rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    if (a.g.count !== null && b.g.count !== null && a.g.count !== b.g.count)
+      return b.g.count - a.g.count;
+    return a.g.relationshipName.localeCompare(b.g.relationshipName);
+  });
+
+  const pillHtml = ({ g, i }) => {
+    const hasRecs = g.count > 0;
+    const pending = g.count === null;
+    return `<div class="rel-group${hasRecs ? " rel-has-records" : ""}${pending ? " rel-pending" : ""}">
       <div class="rel-head" data-idx="${i}">
         <span class="rel-name">${escapeHtml(g.relationshipName)}</span>
-        <span class="rel-badge" data-rel-badge="${i}">${g.count === null ? "…" : g.count}</span>
+        <span class="rel-badge">${pending ? "…" : g.count}</span>
       </div>
-    </div>`
-  ).join("");
+    </div>`;
+  };
 
+  let html = "";
+  if (cpq.length) {
+    html += `<div class="rel-group-header">CPQ</div>`;
+    html += sortBucket(cpq).map(pillHtml).join("");
+  }
+  if (std.length) {
+    if (cpq.length) html += `<div class="rel-group-header">Standard</div>`;
+    html += sortBucket(std).map(pillHtml).join("");
+  }
+
+  els.relatedRecords.innerHTML = html;
   els.relatedRecords.querySelectorAll("[data-idx]").forEach(h =>
     h.addEventListener("click", () => openModal(+h.dataset.idx))
   );
@@ -428,6 +490,10 @@ function renderCellInput(recordId, field, value, meta) {
     return `<input type="datetime-local" ${a} value="${escapeAttribute(toDatetimeLocal(v))}">`;
   if (["int","double","currency","percent"].includes(type))
     return `<input type="number" ${a} value="${escapeAttribute(String(v))}">`;
+  if (type === "reference") {
+    const name = state.lookupNames[v] || "";
+    return `<div class="lookup-wrap"><input ${a} value="${escapeAttribute(String(v))}" placeholder="${escapeAttribute(meta?.referenceTo?.[0] || "ID")}">${name ? `<span class="lookup-name">${escapeHtml(name)}</span>` : ""}</div>`;
+  }
   return `<input ${a} value="${escapeAttribute(String(v))}">`;
 }
 
@@ -479,6 +545,7 @@ async function pushTableFrame(childObj, parentField, relationName, parentId, par
     const recs  = await query(
       `SELECT ${[...new Set(queryFields)].join(",")} FROM ${childObj} WHERE ${parentField} = '${parentId}' ORDER BY LastModifiedDate DESC LIMIT 200`
     );
+    await resolveLookupsForRecords(recs, desc);
     modal.stack.push({
       type: "TABLE",
       label: relationName,

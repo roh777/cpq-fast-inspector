@@ -51,7 +51,9 @@
     state.packageEl = root.querySelector("[data-role='package']");
     state.listEl = root.querySelector("[data-role='object-list']");
     state.searchEl = root.querySelector("[data-role='search']");
+    state.currentPageEl = root.querySelector("[data-role='current-page']");
     bindUi(root);
+    renderCurrentPage();
     renderLinks(CPQ_OBJECTS);
     connect();
   }
@@ -88,6 +90,52 @@
       renderLinks(recs.map(r => ({ apiName: r.QualifiedApiName, label: r.Label })));
       setStatus(`${recs.length} result${recs.length !== 1 ? "s" : ""}`);
     } catch { setStatus("search failed"); renderLinks(CPQ_OBJECTS); }
+  }
+
+  function renderCurrentPage() {
+    const el = state.currentPageEl;
+    if (!el) return;
+    const url = window.location.href;
+    // Match /lightning/r/{ObjectApiName}/{RecordId}/view
+    const m = url.match(/\/lightning\/r\/([A-Za-z][A-Za-z0-9_]*)\/([a-zA-Z0-9]{15,18})(\/|$|\?)/);
+    // Match /lightning/r/{RecordId}/view (no object in path)
+    const mId = !m && url.match(/\/lightning\/r\/([a-zA-Z0-9]{15,18})(\/|$|\?)/);
+    const objectApiName = m ? m[1] : null;
+    const recordId = m ? m[2] : (mId ? mId[1] : null);
+    if (!objectApiName && !recordId) { el.innerHTML = ""; return; }
+
+    let html = `<div class="cpqfi-current-section">
+      <div class="cpqfi-section-label">Current Page</div>`;
+    if (objectApiName) {
+      html += `<button class="cpqfi-obj-link cpqfi-cur-obj" data-obj="${escapeHtml(objectApiName)}">
+        <span class="cpqfi-obj-label">${escapeHtml(objectApiName)}</span>
+        <span class="cpqfi-obj-api">open object list</span>
+      </button>`;
+    }
+    if (recordId) {
+      html += `<button class="cpqfi-obj-link cpqfi-cur-rec" data-obj="${escapeHtml(objectApiName || "")}" data-id="${escapeHtml(recordId)}">
+        <span class="cpqfi-obj-label">Open This Record</span>
+        <span class="cpqfi-obj-api">${escapeHtml(recordId)}</span>
+      </button>`;
+    }
+    html += `</div><div class="cpqfi-section-divider"></div>`;
+    el.innerHTML = html;
+
+    el.querySelectorAll(".cpqfi-cur-obj").forEach(btn =>
+      btn.addEventListener("click", () => {
+        if (!contextAlive()) { teardown(); return; }
+        chrome.runtime.sendMessage({ type: "open-tab", object: btn.dataset.obj, host: window.location.origin });
+        toggleInspector(false);
+      })
+    );
+    el.querySelectorAll(".cpqfi-cur-rec").forEach(btn =>
+      btn.addEventListener("click", () => {
+        if (!contextAlive()) { teardown(); return; }
+        const obj = btn.dataset.obj || "Unknown";
+        chrome.runtime.sendMessage({ type: "open-tab", object: obj, host: window.location.origin, recordId: btn.dataset.id });
+        toggleInspector(false);
+      })
+    );
   }
 
   function renderLinks(objects) {
@@ -156,13 +204,13 @@
     if (!root) return;
     const show = typeof forceState === "boolean" ? forceState : state.shell.classList.contains("cpqfi-hidden");
     state.shell.classList.toggle("cpqfi-hidden", !show);
-    state.rail.classList.toggle("cpqfi-hidden", show);
+    // Rail (sticky tab) stays permanently visible — no toggle
   }
 
   function buildShell() {
     return `
-      <div class="cpqfi-rail cpqfi-hidden" data-role="rail">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10l-4 6 4-6"/></svg>
+      <div class="cpqfi-rail" data-role="rail">
+        <span class="cpqfi-rail-label">CPQ</span>
       </div>
       <aside class="cpqfi-shell cpqfi-hidden">
         <header class="cpqfi-header">
@@ -179,6 +227,8 @@
           <input class="cpqfi-search" data-role="search" type="text" placeholder="search all objects...">
         </header>
         <div class="cpqfi-scroll-area">
+          <div data-role="current-page"></div>
+          <div class="cpqfi-section-label">Objects</div>
           <div class="cpqfi-object-list" data-role="object-list"></div>
         </div>
       </aside>`;
