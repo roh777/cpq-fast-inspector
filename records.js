@@ -486,7 +486,7 @@ function renderCellInput(recordId, field, value, meta) {
   const v = value ?? "";
   const type = meta?.type;
   if (type === "boolean")
-    return `<label class="cb-wrap"><input type="checkbox" ${a}${value ? " checked" : ""}><span>${value ? "t" : "f"}</span></label>`;
+    return `<div class="cell-bool"><input type="checkbox" ${a}${value ? " checked" : ""}></div>`;
   if (type === "picklist") {
     const opts = (meta.picklistValues||[]).filter(p => p.active || p.value === v)
       .map(p => `<option value="${escapeAttribute(p.value)}"${p.value===v?" selected":""}>${escapeHtml(p.label)}</option>`).join("");
@@ -500,7 +500,13 @@ function renderCellInput(recordId, field, value, meta) {
     return `<input type="number" ${a} value="${escapeAttribute(String(v))}">`;
   if (type === "reference") {
     const name = state.lookupNames[v] || "";
-    return `<div class="lookup-wrap"><input ${a} value="${escapeAttribute(String(v))}" placeholder="${escapeAttribute(meta?.referenceTo?.[0] || "ID")}">${name ? `<span class="lookup-name">${escapeHtml(name)}</span>` : ""}</div>`;
+    if (name) {
+      return `<div class="lookup-wrap lookup-has-name">
+        <span class="lookup-display-name">${escapeHtml(name)}</span>
+        <input class="lookup-id-input" ${a} value="${escapeAttribute(String(v))}" placeholder="${escapeAttribute(meta?.referenceTo?.[0] || "ID")}">
+      </div>`;
+    }
+    return `<div class="lookup-wrap"><input ${a} value="${escapeAttribute(String(v))}" placeholder="${escapeAttribute(meta?.referenceTo?.[0] || "ID")}"></div>`;
   }
   return `<input ${a} value="${escapeAttribute(String(v))}">`;
 }
@@ -752,11 +758,7 @@ function renderGridTable(frame) {
     const ev    = input.type === "checkbox" ? "change" : "input";
     input.addEventListener(ev, () => {
       const orig = frame.records.find(r => r.Id === rid)?.[field] ?? null;
-      let val = input.type === "checkbox" ? input.checked : coerceValue(input.value);
-      if (input.type === "checkbox") {
-        const sp = input.nextElementSibling;
-        if (sp?.tagName === "SPAN") sp.textContent = val ? "t" : "f";
-      }
+      const val = input.type === "checkbox" ? input.checked : coerceValue(input.value);
       frame.inputValues[rid][field] = val;
       input.closest("td")?.classList.toggle("cell-dirty", orig !== val);
       const row = input.closest("tr[data-row-id]");
