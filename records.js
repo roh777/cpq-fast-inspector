@@ -8,7 +8,7 @@ const SKIP_FIELDS = new Set(["CreatedById","LastModifiedById","SystemModstamp","
 const SKIP_TYPES  = new Set(["address","location","anyType","base64"]);
 const SKIP_CHILD  = /Feed$|Share$|History$|ChangeEvent$|OwnerSharingRule$|__Tag$|AttachedContentDocument$|CombinedAttachment$|NoteAndAttachment$|OpenActivity$|ActivityHistory$|ProcessInstance$|ContentDocumentLink$/;
 
-let timeFilter = ""; // "" | "1h" | "12h" | "7d"
+let timeFilter = "";
 let searchDebounce = null;
 
 const state = {
@@ -22,8 +22,12 @@ const state = {
   isNew: false,
 };
 
-// Modal state
-const modal = { stack: [] };
+// Grid navigation state — replaces modal
+const gridNav = {
+  stack: [],        // Array of frame objects
+  colState: {},     // { [objectName]: string[] } — active column order per object
+  pickerOpen: false,
+};
 
 const els = {
   title:    document.getElementById("title"),
@@ -41,24 +45,28 @@ const els = {
   recordList:     document.getElementById("recordList"),
   recordForm:     document.getElementById("recordForm"),
   relatedRecords: document.getElementById("relatedRecords"),
-  modalOverlay:   document.getElementById("modal"),
-  modalBody:      document.getElementById("modalBody"),
-  modalCrumb:     document.getElementById("modalCrumb"),
-  modalStatus:    document.getElementById("modalStatus"),
-  modalSave:      document.getElementById("modalSave"),
-  modalClose:     document.getElementById("modalClose"),
+  recordsView:    document.getElementById("recordsView"),
+  gridView:       document.getElementById("gridView"),
+  gridCrumb:      document.getElementById("gridCrumb"),
+  gridStatus:     document.getElementById("gridStatus"),
+  colPickerBtn:   document.getElementById("colPickerBtn"),
+  gridSave:       document.getElementById("gridSave"),
+  colPickerPanel: document.getElementById("colPickerPanel"),
+  colSearch:      document.getElementById("colSearch"),
+  loadLayoutBtn:  document.getElementById("loadLayoutBtn"),
+  colPickerList:  document.getElementById("colPickerList"),
+  gridBody:       document.getElementById("gridBody"),
 };
 
 boot();
 
-// ── Boot ───────────────────────────────────────────────────────────────────
+// ── Boot ─────────────────────────────────────────────────────────────────
 
 async function boot() {
   els.title.textContent = humanize(objectName);
   els.subtitle.textContent = host ? new URL(host).hostname.replace(".my.salesforce.com","") : "";
   if (!host) { setStatus("missing host — reopen from inspector panel", true); return; }
 
-  // Main record list events
   els.filter.addEventListener("input", () => {
     clearTimeout(searchDebounce);
     searchDebounce = setTimeout(loadRecords, 350);
@@ -70,7 +78,6 @@ async function boot() {
   els.clone.addEventListener("click", cloneRecord);
   els.loadMore.addEventListener("click", loadMore);
 
-  // Time filter buttons
   document.querySelectorAll(".tf").forEach(btn =>
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tf").forEach(b => b.classList.remove("active"));
@@ -80,17 +87,21 @@ async function boot() {
     })
   );
 
-  // Modal events
-  els.modalClose.addEventListener("click", closeModal);
-  els.modalSave.addEventListener("click", saveModalChanges);
-  els.modalOverlay.addEventListener("click", e => { if (e.target === els.modalOverlay) closeModal(); });
+  // Grid view events
+  els.colPickerBtn.addEventListener("click", toggleColPicker);
+  els.gridSave.addEventListener("click", saveGridChanges);
+  els.loadLayoutBtn.addEventListener("click", applyLayoutFields);
+  els.colSearch.addEventListener("input", () => {
+    const frame = gridNav.stack[gridNav.stack.length - 1];
+    if (frame?.type === "TABLE") renderColPicker(frame.objectName, frame.desc);
+  });
 
   setStatus("loading...");
   await loadRecords();
   if (initialRecordId) await loadSelectedRecord(initialRecordId);
 }
 
-// ── Record list loading ────────────────────────────────────────────────────
+// ── Record list loading ───────────────────────────────────────────────────
 
 function buildQuery() {
   const parts = [];
@@ -133,6 +144,7 @@ async function loadMore() {
 }
 
 async function loadSelectedRecord(id) {
+  showRecordsView();
   const desc = await describe();
   const cfg  = deriveConfig(desc);
   try {
@@ -149,6 +161,7 @@ async function loadSelectedRecord(id) {
 
 function startNew() {
   state.selected = null; state.inputValues = {}; state.isNew = true; state.relatedGroups = [];
+  showRecordsView();
   renderList(); renderForm(); renderRelated();
 }
 
@@ -156,12 +169,12 @@ function cloneRecord() {
   if (!state.selected) return;
   const desc = state.cache[objectName];
   if (!desc) return;
-  // Copy only updateable field values; drop Id and read-only fields
   const cloned = {};
   desc.fields.forEach(f => {
     if (f.updateable && state.selected[f.name] != null) cloned[f.name] = state.selected[f.name];
   });
   state.selected = null; state.inputValues = cloned; state.isNew = true; state.relatedGroups = [];
+  showRecordsView();
   renderList(); renderForm(); renderRelated();
   setStatus("cloned — edit and click create");
 }
@@ -175,7 +188,7 @@ async function saveRecord() {
     Object.entries(state.inputValues).filter(([k,v]) => state.selected[k] !== v)
   );
   if (!Object.keys(changes).length) { setStatus("no changes"); return; }
-  datetimeFix(changes);
+  datetimeFix(changes, objectName);
   setBusy(els.save, "saving");
   try {
     await rest(`/services/data/${API_VERSION}/sobjects/${objectName}/${state.selected.Id}`, { method:"PATCH", body:changes });
@@ -188,7 +201,7 @@ async function saveRecord() {
 
 async function createRecord() {
   const payload = Object.fromEntries(Object.entries(state.inputValues).filter(([,v]) => v != null && v !== ""));
-  datetimeFix(payload);
+  datetimeFix(payload, objectName);
   setBusy(els.save, "creating");
   try {
     const result = await rest(`/services/data/${API_VERSION}/sobjects/${objectName}`, { method:"POST", body:payload });
@@ -212,7 +225,7 @@ async function deleteRecord() {
   finally { resetBtn(els.del, "delete"); }
 }
 
-// ── Describe + config ──────────────────────────────────────────────────────
+// ── Describe + config ─────────────────────────────────────────────────────
 
 async function describe(obj = objectName) {
   if (state.cache[obj]) return state.cache[obj];
@@ -231,13 +244,13 @@ function deriveConfig(desc) {
   const listFields = ["Id", ...desc.fields
     .filter(f => f.name !== "Id" && !SKIP_FIELDS.has(f.name) && !SKIP_TYPES.has(f.type) && f.type !== "textarea")
     .slice(0, 5).map(f => f.name)];
-  // All readable fields: editable first, then read-only (formulas, autonumber, etc.)
   const editable   = desc.fields.filter(f => f.name !== "Id" && f.updateable && !SKIP_TYPES.has(f.type));
   const readOnly   = desc.fields.filter(f => f.name !== "Id" && !f.updateable && !SKIP_FIELDS.has(f.name) && !SKIP_TYPES.has(f.type));
   const detailFields = ["Id", ...editable.map(f => f.name), ...readOnly.map(f => f.name)];
   return (desc._cfg = { listFields, detailFields });
 }
 
+// All editable fields suitable as grid columns
 function getTableCols(desc) {
   return desc.fields
     .filter(f => f.updateable && !SKIP_FIELDS.has(f.name) && !SKIP_TYPES.has(f.type) && f.type !== "textarea")
@@ -249,7 +262,6 @@ function getTableCols(desc) {
 function initRelatedGroups(desc) {
   const all = desc.childRelationships
     .filter(r => r.relationshipName && !SKIP_CHILD.test(r.childSObject));
-  // Prioritize SBQQ relationships, then alphabetical
   all.sort((a, b) => {
     const aS = a.childSObject.startsWith("SBQQ__") ? 0 : 1;
     const bS = b.childSObject.startsWith("SBQQ__") ? 0 : 1;
@@ -267,7 +279,7 @@ function loadRelatedCounts(parentId) {
       .then(r => {
         if (!state.relatedGroups[i]) return;
         state.relatedGroups[i].count = r.totalSize;
-        renderRelated(); // re-sort and re-render with updated counts
+        renderRelated();
       }).catch(() => {});
   });
 }
@@ -333,7 +345,6 @@ function renderList() {
   els.loadMore.style.display = state.nextUrl ? "block" : "none";
 }
 
-// Renders fields split into editable + read-only sections with a divider
 function renderFieldSections(fields, desc, rec, inputValues, creating) {
   const editableHtml = [];
   const readOnlyHtml = [];
@@ -368,11 +379,11 @@ function renderForm() {
   }
 
   if (!rec && !creating) {
-    els.recordForm.innerHTML = "<div class=\"meta\">select a record or click + New</div>";
+    els.recordForm.innerHTML = "<div class=\"meta\" style=\"padding:10px\">select a record or click + New</div>";
     return;
   }
   const desc = state.cache[objectName];
-  if (!desc) { els.recordForm.innerHTML = "<div class=\"meta\">loading...</div>"; return; }
+  if (!desc) { els.recordForm.innerHTML = "<div class=\"meta\" style=\"padding:10px\">loading...</div>"; return; }
 
   const cfg = deriveConfig(desc);
   const fields = creating
@@ -384,16 +395,14 @@ function renderForm() {
 }
 
 function renderRelated() {
-  if (!state.selected || state.isNew) { els.relatedRecords.innerHTML = "<div class=\"meta\">—</div>"; return; }
-  if (!state.relatedGroups.length)    { els.relatedRecords.innerHTML = "<div class=\"meta\">none</div>"; return; }
+  if (!state.selected || state.isNew) { els.relatedRecords.innerHTML = "<div class=\"meta\" style=\"padding:10px\">—</div>"; return; }
+  if (!state.relatedGroups.length)    { els.relatedRecords.innerHTML = "<div class=\"meta\" style=\"padding:10px\">none</div>"; return; }
 
-  // Split into CPQ and standard buckets, preserving original indices
   const cpq = [], std = [];
   state.relatedGroups.forEach((g, i) =>
     (g.childSObject.startsWith("SBQQ__") ? cpq : std).push({ g, i })
   );
 
-  // Sort: count>0 first (desc), then count=0, then still-loading (null), then alpha
   const sortBucket = arr => [...arr].sort((a, b) => {
     const rank = x => x.g.count > 0 ? 0 : x.g.count === 0 ? 1 : 2;
     const ra = rank(a), rb = rank(b);
@@ -426,7 +435,7 @@ function renderRelated() {
 
   els.relatedRecords.innerHTML = html;
   els.relatedRecords.querySelectorAll("[data-idx]").forEach(h =>
-    h.addEventListener("click", () => openModal(+h.dataset.idx))
+    h.addEventListener("click", () => openGridView(+h.dataset.idx))
   );
 }
 
@@ -440,7 +449,6 @@ function renderInput(field, value, meta) {
   const lbl = `<label>${escapeHtml(meta?.label || field)}</label>`;
 
   if (ro) {
-    // Read-only: render as plain disabled input regardless of type
     const display = (type === "reference" && state.lookupNames[v]) ? state.lookupNames[v] : String(v);
     return `${lbl}<input ${a} value="${escapeAttribute(display)}" readonly class="field-ro">`;
   }
@@ -472,7 +480,7 @@ function renderInput(field, value, meta) {
   return `${lbl}<input ${a} value="${escapeAttribute(String(v))}">`;
 }
 
-// Render a compact cell input for the modal table (no label, uses data-record + data-field)
+// Compact cell input for the grid table (no label)
 function renderCellInput(recordId, field, value, meta) {
   const a = `data-record="${escapeHtml(recordId)}" data-field="${escapeHtml(field)}"`;
   const v = value ?? "";
@@ -497,13 +505,12 @@ function renderCellInput(recordId, field, value, meta) {
   return `<input ${a} value="${escapeAttribute(String(v))}">`;
 }
 
-// Shared event wiring for main form
 function wireFormEvents(container, desc, inputValues, originalRecord) {
   container.querySelectorAll("[data-field]").forEach(el => {
     const field = el.dataset.field;
     const meta  = desc.fieldMap[field];
-    if (el.readOnly || el.disabled || field === "Id") return; // skip read-only fields
-    const ev    = el.type === "checkbox" ? "change" : "input";
+    if (el.readOnly || el.disabled || field === "Id") return;
+    const ev = el.type === "checkbox" ? "change" : "input";
     el.addEventListener(ev, () => {
       let val;
       if (el.type === "checkbox") {
@@ -522,31 +529,63 @@ function wireFormEvents(container, desc, inputValues, originalRecord) {
   });
 }
 
-// ── Modal ─────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// GRID VIEW — full-panel spreadsheet navigation
+// ══════════════════════════════════════════════════════════════════════════
 
-async function openModal(groupIdx) {
-  const g = state.relatedGroups[groupIdx];
-  if (!g || !state.selected) return;
-  modal.stack = [];
-  await pushTableFrame(g.childSObject, g.field, g.relationshipName,
-    state.selected.Id, state.selected.Name || state.selected.Id);
-  els.modalOverlay.style.display = "flex";
+function showGridView() {
+  els.recordsView.style.display = "none";
+  els.gridView.style.display = "flex";
 }
 
-async function pushTableFrame(childObj, parentField, relationName, parentId, parentLabel) {
-  if (modal.stack.length >= 5) return;
-  els.modalStatus.textContent = "loading...";
+function showRecordsView() {
+  gridNav.stack = [];
+  gridNav.pickerOpen = false;
+  els.recordsView.style.display = "";
+  els.gridView.style.display = "none";
+  els.colPickerPanel.style.display = "none";
+  els.colPickerBtn.classList.remove("active");
+}
+
+async function openGridView(groupIdx) {
+  const g = state.relatedGroups[groupIdx];
+  if (!g || !state.selected) return;
+  gridNav.stack = [];
+  const parentLabel = state.selected.Name || state.selected.Id;
+  await pushGridTableFrame(g.childSObject, g.field, g.relationshipName, state.selected.Id, parentLabel);
+  showGridView();
+}
+
+async function pushGridTableFrame(childObj, parentField, relationName, parentId, parentLabel) {
+  els.gridStatus.textContent = "loading…";
+  els.colPickerBtn.style.display = "none";
+  els.gridSave.style.display = "none";
+
   try {
-    const desc  = await describe(childObj);
-    const cols  = getTableCols(desc);
-    // Include name field
+    const desc = await describe(childObj);
+    const allCols = getTableCols(desc);
+
+    // Determine active columns: use saved state, or load from page layout, or fallback to first 8
+    if (!gridNav.colState[childObj]) {
+      const layoutFields = await loadLayoutFields(childObj);
+      if (layoutFields?.length) {
+        const editableSet = new Set(allCols);
+        const layoutCols = layoutFields.filter(f => editableSet.has(f));
+        gridNav.colState[childObj] = layoutCols.length ? layoutCols.slice(0, 12) : allCols.slice(0, 8);
+      } else {
+        gridNav.colState[childObj] = allCols.slice(0, 8);
+      }
+    }
+
+    const activeCols = gridNav.colState[childObj];
     const nameField = desc.fields.find(f => f.nameField)?.name || "Name";
-    const queryFields = ["Id", ...(desc.fieldMap[nameField] ? [nameField] : []), ...cols.filter(c => c !== nameField)];
-    const recs  = await query(
+    const queryFields = ["Id", ...(desc.fieldMap[nameField] ? [nameField] : []), ...activeCols.filter(c => c !== nameField)];
+    const recs = await query(
       `SELECT ${[...new Set(queryFields)].join(",")} FROM ${childObj} WHERE ${parentField} = '${parentId}' ORDER BY LastModifiedDate DESC LIMIT 200`
     );
     await resolveLookupsForRecords(recs, desc);
-    modal.stack.push({
+
+    gridNav.stack.push({
       type: "TABLE",
       label: relationName,
       parentLabel,
@@ -556,44 +595,57 @@ async function pushTableFrame(childObj, parentField, relationName, parentId, par
       nameField,
       records: recs,
       desc,
-      cols,
       inputValues: Object.fromEntries(recs.map(r => [r.Id, { ...r }])),
     });
-    renderModal();
-  } catch(e) { els.modalStatus.textContent = e.message; }
+    renderGridView();
+    els.gridStatus.textContent = `${recs.length} record${recs.length !== 1 ? "s" : ""}`;
+  } catch(e) {
+    els.gridStatus.textContent = e.message;
+  }
 }
 
-async function pushDetailFrame(objectName, recordId, recordLabel) {
-  if (modal.stack.length >= 5) return;
-  els.modalStatus.textContent = "loading...";
+async function pushGridDetailFrame(objName, recordId, recordLabel) {
+  els.gridStatus.textContent = "loading…";
+  els.colPickerBtn.style.display = "none";
+
   try {
-    const desc = await describe(objectName);
+    const desc = await describe(objName);
     const cfg  = deriveConfig(desc);
     const [record] = await query(
-      `SELECT ${cfg.detailFields.join(",")} FROM ${objectName} WHERE Id = '${recordId}' LIMIT 1`
+      `SELECT ${cfg.detailFields.join(",")} FROM ${objName} WHERE Id = '${recordId}' LIMIT 1`
     );
-    if (!record) { els.modalStatus.textContent = "not found"; return; }
+    if (!record) { els.gridStatus.textContent = "record not found"; return; }
+
     const relatedGroups = desc.childRelationships
       .filter(r => r.relationshipName && !SKIP_CHILD.test(r.childSObject))
-      .slice(0, 20)
+      .slice(0, 24)
       .map(r => ({ ...r, count: null }));
-    modal.stack.push({ type:"DETAIL", label:recordLabel, objectName, record, desc, inputValues:{...record}, relatedGroups });
-    renderModal();
-    // Lazy counts for this detail frame's related groups
+
+    gridNav.stack.push({ type:"DETAIL", label:recordLabel, objectName:objName, record, desc, inputValues:{...record}, relatedGroups });
+    renderGridView();
+    els.gridStatus.textContent = "";
+
+    // Load related counts async
     relatedGroups.forEach((g, i) => {
       rawQuery(`SELECT COUNT() FROM ${g.childSObject} WHERE ${g.field} = '${recordId}'`)
         .then(r => {
           relatedGroups[i].count = r.totalSize;
-          const badge = els.modalBody.querySelector(`[data-modal-badge="${i}"]`);
+          const badge = els.gridBody.querySelector(`[data-rel-badge="${i}"]`);
           if (badge) badge.textContent = r.totalSize;
+          const pill = badge?.closest(".rel-group");
+          if (pill) {
+            pill.classList.toggle("rel-has-records", r.totalSize > 0);
+            pill.classList.remove("rel-pending");
+          }
         }).catch(() => {});
     });
-    // Resolve lookups for this record
+
+    // Resolve lookups
     resolveLookups(record, desc).then(() => {
       desc.fields.filter(f => f.type === "reference" && record[f.name]).forEach(f => {
         const name = state.lookupNames[record[f.name]];
         if (!name) return;
-        const inp = els.modalBody.querySelector(`[data-field="${f.name}"]`);
+        const inp = els.gridBody.querySelector(`[data-field="${f.name}"]`);
         if (!inp) return;
         const wrap = inp.closest(".lookup-wrap");
         if (!wrap) return;
@@ -602,68 +654,99 @@ async function pushDetailFrame(objectName, recordId, recordLabel) {
         span.textContent = name;
       });
     });
-  } catch(e) { els.modalStatus.textContent = e.message; }
-}
-
-function renderModal() {
-  const frame = modal.stack[modal.stack.length - 1];
-  if (!frame) { closeModal(); return; }
-  els.modalStatus.textContent = "";
-
-  // Breadcrumb
-  const depth = modal.stack.length;
-  els.modalCrumb.innerHTML = modal.stack.map((f, i) => {
-    const isLast = i === depth - 1;
-    const crumb = `<span class="crumb${isLast ? " crumb-active" : ""}" ${!isLast ? `data-depth="${i}"` : ""}>${escapeHtml(f.label)}</span>`;
-    return i < depth - 1 ? crumb + `<span class="crumb-sep">›</span>` : crumb;
-  }).join("");
-  els.modalCrumb.querySelectorAll("[data-depth]").forEach(c =>
-    c.addEventListener("click", () => { modal.stack.splice(+c.dataset.depth + 1); renderModal(); })
-  );
-
-  if (depth >= 5) {
-    const depthEl = els.modalCrumb.querySelector(".depth-warn") || Object.assign(document.createElement("span"), { className:"depth-warn" });
-    depthEl.textContent = " (max depth)";
-    els.modalCrumb.appendChild(depthEl);
+  } catch(e) {
+    els.gridStatus.textContent = e.message;
   }
-
-  frame.type === "TABLE" ? renderTableFrame(frame) : renderDetailFrame(frame);
 }
 
-function renderTableFrame(frame) {
-  const { records, desc, cols, inputValues, objectName, nameField } = frame;
-  els.modalSave.style.display = "";
+function renderGridView() {
+  const frame = gridNav.stack[gridNav.stack.length - 1];
+  if (!frame) { showRecordsView(); return; }
+
+  // Build breadcrumb
+  els.gridCrumb.innerHTML = "";
+
+  // Root crumb: parent record name → clicking returns to records view
+  const rootLabel = state.selected?.Name || state.selected?.Id || objectName;
+  const rootEl = document.createElement("span");
+  rootEl.className = "crumb";
+  rootEl.textContent = rootLabel;
+  rootEl.title = "Back to record";
+  rootEl.addEventListener("click", showRecordsView);
+  els.gridCrumb.appendChild(rootEl);
+
+  gridNav.stack.forEach((f, i) => {
+    const sep = document.createElement("span");
+    sep.className = "crumb-sep";
+    sep.textContent = "›";
+    els.gridCrumb.appendChild(sep);
+
+    const el = document.createElement("span");
+    const isLast = i === gridNav.stack.length - 1;
+    el.className = `crumb${isLast ? " crumb-active" : ""}`;
+    el.textContent = f.label;
+    if (!isLast) {
+      el.addEventListener("click", () => {
+        gridNav.stack.splice(i + 1);
+        // Close picker if switching frames
+        if (gridNav.pickerOpen) toggleColPicker();
+        renderGridView();
+      });
+    }
+    els.gridCrumb.appendChild(el);
+  });
+
+  if (frame.type === "TABLE") {
+    renderGridTable(frame);
+  } else {
+    renderGridDetail(frame);
+  }
+}
+
+function renderGridTable(frame) {
+  const { records, desc, inputValues, objectName: childObj, nameField } = frame;
+  const activeCols = gridNav.colState[childObj] || getTableCols(desc).slice(0, 8);
+
+  els.colPickerBtn.style.display = "";
+  els.gridSave.style.display = "";
 
   if (!records.length) {
-    els.modalBody.innerHTML = "<div class=\"modal-empty\">No records.</div>";
-    els.modalSave.style.display = "none";
+    els.gridBody.innerHTML = `<div class="grid-empty">No records in this relationship.</div>`;
+    els.colPickerBtn.style.display = "none";
+    els.gridSave.style.display = "none";
     return;
   }
 
-  const thead = `<tr class="modal-thead">
-    <th class="col-sticky">${escapeHtml(desc.fieldMap[nameField]?.label || "Name")}</th>
-    ${cols.map(c => `<th title="${escapeHtml(c)}">${escapeHtml(desc.fieldMap[c]?.label || c)}</th>`).join("")}
-    <th></th>
+  const thead = `<tr class="grid-thead-row">
+    <th class="col-th-name">${escapeHtml(desc.fieldMap[nameField]?.label || "Name")}</th>
+    ${activeCols.map(c =>
+      `<th class="col-th" title="${escapeHtml(c)}">${escapeHtml(desc.fieldMap[c]?.label || humanize(c))}</th>`
+    ).join("")}
+    <th class="col-th"></th>
   </tr>`;
 
   const tbody = records.map(r => {
     const vals = inputValues[r.Id];
-    const rowDirty = cols.some(c => vals[c] !== r[c]);
-    const cells = cols.map(c => {
+    const rowDirty = activeCols.some(c => vals[c] !== r[c]);
+    const cells = activeCols.map(c => {
       const dirty = vals[c] !== r[c];
-      return `<td class="${dirty ? "td-dirty" : ""}">${renderCellInput(r.Id, c, vals[c], desc.fieldMap[c])}</td>`;
+      return `<td class="grid-cell${dirty ? " cell-dirty" : ""}">${renderCellInput(r.Id, c, vals[c], desc.fieldMap[c])}</td>`;
     });
-    return `<tr class="${rowDirty ? "row-dirty" : ""}">
-      <td class="col-sticky col-name">${escapeHtml(r[nameField] || r.Id)}</td>
+    const sfHref = host ? `${host}/lightning/r/${escapeHtml(childObj)}/${escapeHtml(r.Id)}/view` : "#";
+    return `<tr class="grid-row${rowDirty ? " row-dirty" : ""}" data-row-id="${escapeHtml(r.Id)}">
+      <td class="grid-name-cell" title="${escapeHtml(r[nameField] || r.Id)}">${escapeHtml(r[nameField] || r.Id)}</td>
       ${cells.join("")}
-      <td class="col-drill"><button class="drill-btn" data-id="${escapeHtml(r.Id)}" data-name="${escapeHtml(r[nameField]||r.Id)}" data-obj="${escapeHtml(objectName)}">→</button></td>
+      <td class="grid-action-cell">
+        ${host ? `<a class="sf-link" href="${sfHref}" target="_blank" title="Open in Salesforce">↗</a>` : ""}
+        <button class="drill-btn" data-id="${escapeHtml(r.Id)}" data-name="${escapeHtml(r[nameField]||r.Id)}" data-obj="${escapeHtml(childObj)}" title="View record detail">→</button>
+      </td>
     </tr>`;
   }).join("");
 
-  els.modalBody.innerHTML = `<div class="modal-table-wrap"><table class="modal-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>`;
+  els.gridBody.innerHTML = `<div class="grid-table-wrap"><table class="grid-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>`;
 
-  // Wire cell events
-  els.modalBody.querySelectorAll("[data-record]").forEach(input => {
+  // Wire cell change events
+  els.gridBody.querySelectorAll("[data-record]").forEach(input => {
     const rid   = input.dataset.record;
     const field = input.dataset.field;
     const ev    = input.type === "checkbox" ? "change" : "input";
@@ -675,65 +758,97 @@ function renderTableFrame(frame) {
         if (sp?.tagName === "SPAN") sp.textContent = val ? "t" : "f";
       }
       frame.inputValues[rid][field] = val;
-      input.closest("td")?.classList.toggle("td-dirty", orig !== val);
-      input.closest("tr")?.classList.toggle("row-dirty",
-        frame.cols.some(c => frame.inputValues[rid][c] !== frame.records.find(r => r.Id === rid)?.[c])
-      );
+      input.closest("td")?.classList.toggle("cell-dirty", orig !== val);
+      const row = input.closest("tr[data-row-id]");
+      if (row) {
+        const cols = gridNav.colState[frame.objectName] || [];
+        const rec  = frame.records.find(r => r.Id === rid);
+        row.classList.toggle("row-dirty", cols.some(c => frame.inputValues[rid]?.[c] !== rec?.[c]));
+      }
     });
   });
 
-  // Drill buttons
-  els.modalBody.querySelectorAll(".drill-btn").forEach(btn =>
+  // Drill-in buttons
+  els.gridBody.querySelectorAll(".drill-btn").forEach(btn =>
     btn.addEventListener("click", () =>
-      pushDetailFrame(btn.dataset.obj, btn.dataset.id, btn.dataset.name)
+      pushGridDetailFrame(btn.dataset.obj, btn.dataset.id, btn.dataset.name)
     )
   );
+
+  // Re-render col picker if it's open
+  if (gridNav.pickerOpen) renderColPicker(childObj, desc);
 }
 
-function renderDetailFrame(frame) {
-  const { record, desc, inputValues, relatedGroups, objectName } = frame;
+function renderGridDetail(frame) {
+  const { record, desc, inputValues, relatedGroups, objectName: obj } = frame;
   const cfg    = deriveConfig(desc);
   const fields = cfg.detailFields.filter(f => f in record);
-  els.modalSave.style.display = "";
 
-  const formHtml = `<div class="modal-detail-form">${renderFieldSections(fields, desc, record, inputValues, false)}</div>`;
+  els.colPickerBtn.style.display = "none";
+  els.gridSave.style.display = "";
 
-  const relHtml = relatedGroups.length ? `<div class="modal-related-list">
-    <div class="modal-section-head">Related</div>
-    ${relatedGroups.map((g, i) =>
-      `<div class="rel-group">
-        <div class="rel-head modal-rel-drill" data-rel="${i}">
-          ▸ <span class="rel-name">${escapeHtml(g.relationshipName)}</span>
-          <span class="rel-badge" data-modal-badge="${i}">${g.count === null ? "…" : g.count}</span>
-        </div>
-      </div>`
-    ).join("")}
-  </div>` : "";
+  const sfHref = host ? `${host}/lightning/r/${escapeHtml(obj)}/${escapeHtml(record.Id)}/view` : null;
+  const sfLink = sfHref ? `<a href="${sfHref}" target="_blank" class="sf-link" style="display:inline-flex;align-items:center;padding:3px 8px;font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);border:1px solid var(--border);border-radius:4px;text-decoration:none;margin-left:auto">↗ SF</a>` : "";
 
-  els.modalBody.innerHTML = formHtml + relHtml;
+  const cpq = [], std = [];
+  relatedGroups.forEach((g, i) =>
+    (g.childSObject.startsWith("SBQQ__") ? cpq : std).push({ g, i })
+  );
+  const sortBucket = arr => [...arr].sort((a, b) => {
+    const rank = x => x.g.count > 0 ? 0 : x.g.count === 0 ? 1 : 2;
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    return a.g.relationshipName.localeCompare(b.g.relationshipName);
+  });
+  const pillHtml = ({ g, i }) =>
+    `<div class="rel-group${g.count > 0 ? " rel-has-records" : ""}${g.count === null ? " rel-pending" : ""}">
+      <div class="rel-head" data-detail-rel="${i}">
+        <span class="rel-name">${escapeHtml(g.relationshipName)}</span>
+        <span class="rel-badge" data-rel-badge="${i}">${g.count === null ? "…" : g.count}</span>
+      </div>
+    </div>`;
 
-  // Wire form events
-  wireFormEvents(els.modalBody, desc, inputValues, record);
+  let relHtml = "";
+  if (relatedGroups.length) {
+    const cpqHtml = cpq.length ? `<div class="rel-group-header">CPQ</div>${sortBucket(cpq).map(pillHtml).join("")}` : "";
+    const stdHtml = std.length ? `${cpq.length ? '<div class="rel-group-header">Standard</div>' : ""}${sortBucket(std).map(pillHtml).join("")}` : "";
+    relHtml = `<div class="grid-section-head">Related Records</div>
+      <div class="grid-detail-pills">${cpqHtml}${stdHtml}</div>`;
+  }
 
-  // Drill into related
-  els.modalBody.querySelectorAll("[data-rel]").forEach(h =>
+  els.gridBody.innerHTML = `
+    <div class="grid-detail-wrap">
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border);background:#f8fafc;flex-shrink:0">
+        <span style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">${escapeHtml(obj.replace(/SBQQ__|__c/g,""))}</span>
+        ${sfLink}
+      </div>
+      <div class="grid-detail-form">${renderFieldSections(fields, desc, record, inputValues, false)}</div>
+      <div class="grid-detail-related">${relHtml}</div>
+    </div>`;
+
+  wireFormEvents(els.gridBody, desc, inputValues, record);
+
+  els.gridBody.querySelectorAll("[data-detail-rel]").forEach(h =>
     h.addEventListener("click", () => {
-      const g = frame.relatedGroups[+h.dataset.rel];
-      pushTableFrame(g.childSObject, g.field, g.relationshipName, record.Id, frame.label);
+      const g = frame.relatedGroups[+h.dataset.detailRel];
+      if (g) pushGridTableFrame(g.childSObject, g.field, g.relationshipName, record.Id, frame.label);
     })
   );
 }
 
-async function saveModalChanges() {
-  const frame = modal.stack[modal.stack.length - 1];
+// ── Save grid changes ─────────────────────────────────────────────────────
+
+async function saveGridChanges() {
+  const frame = gridNav.stack[gridNav.stack.length - 1];
   if (!frame) return;
-  setBusy(els.modalSave, "saving...");
+  setBusy(els.gridSave, "saving…");
   let saved = 0, errors = 0;
 
   if (frame.type === "TABLE") {
+    const activeCols = gridNav.colState[frame.objectName] || [];
     const dirty = frame.records.map(r => {
       const changes = Object.fromEntries(
-        frame.cols.filter(c => frame.inputValues[r.Id][c] !== r[c])
+        activeCols
+          .filter(c => frame.inputValues[r.Id]?.[c] !== r[c])
           .map(c => [c, frame.inputValues[r.Id][c]])
       );
       return Object.keys(changes).length ? { id: r.Id, changes } : null;
@@ -741,6 +856,7 @@ async function saveModalChanges() {
 
     await Promise.allSettled(dirty.map(async ({ id, changes }) => {
       try {
+        datetimeFix(changes, frame.objectName);
         await rest(`/services/data/${API_VERSION}/sobjects/${frame.objectName}/${id}`, { method:"PATCH", body:changes });
         const rec = frame.records.find(r => r.Id === id);
         if (rec) Object.assign(rec, changes);
@@ -752,7 +868,7 @@ async function saveModalChanges() {
       Object.entries(frame.inputValues).filter(([k,v]) => frame.record[k] !== v)
     );
     if (Object.keys(changes).length) {
-      datetimeFix(changes);
+      datetimeFix(changes, frame.objectName);
       try {
         await rest(`/services/data/${API_VERSION}/sobjects/${frame.objectName}/${frame.record.Id}`, { method:"PATCH", body:changes });
         Object.assign(frame.record, changes);
@@ -761,15 +877,152 @@ async function saveModalChanges() {
     }
   }
 
-  els.modalStatus.textContent = errors ? `${saved} saved, ${errors} failed` : `${saved} saved`;
-  resetBtn(els.modalSave, "Save Changes");
-  // Re-render to clear dirty markers
-  renderModal();
+  const msg = errors ? `${saved} saved, ${errors} failed` : `${saved} saved`;
+  els.gridStatus.textContent = msg;
+  resetBtn(els.gridSave, "Save Changes");
+  renderGridView();
 }
 
-function closeModal() {
-  modal.stack = [];
-  els.modalOverlay.style.display = "none";
+// ── Column picker ─────────────────────────────────────────────────────────
+
+function toggleColPicker() {
+  gridNav.pickerOpen = !gridNav.pickerOpen;
+  els.colPickerBtn.classList.toggle("active", gridNav.pickerOpen);
+  if (gridNav.pickerOpen) {
+    const frame = gridNav.stack[gridNav.stack.length - 1];
+    if (frame?.type === "TABLE") {
+      renderColPicker(frame.objectName, frame.desc);
+      els.colPickerPanel.style.display = "";
+    }
+  } else {
+    els.colPickerPanel.style.display = "none";
+    els.colSearch.value = "";
+  }
+}
+
+function renderColPicker(objName, desc) {
+  const allCols   = getTableCols(desc);
+  const activeCols = new Set(gridNav.colState[objName] || []);
+  const search    = els.colSearch.value.trim().toLowerCase();
+
+  const filtered = search
+    ? allCols.filter(c => {
+        const label = (desc.fieldMap[c]?.label || c).toLowerCase();
+        return label.includes(search) || c.toLowerCase().includes(search);
+      })
+    : allCols;
+
+  els.colPickerList.innerHTML = filtered.map(c => {
+    const label   = desc.fieldMap[c]?.label || humanize(c);
+    const active  = activeCols.has(c);
+    return `<label class="col-pick-row${active ? " active-col" : ""}">
+      <input type="checkbox" data-col="${escapeHtml(c)}"${active ? " checked" : ""}>
+      <span class="col-pick-label">${escapeHtml(label)}</span>
+      <span class="col-pick-name">${escapeHtml(c)}</span>
+    </label>`;
+  }).join("");
+
+  els.colPickerList.querySelectorAll("[data-col]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const col    = cb.dataset.col;
+      const active = new Set(gridNav.colState[objName] || []);
+      if (cb.checked) active.add(col);
+      else active.delete(col);
+      // Preserve original order from allCols
+      gridNav.colState[objName] = allCols.filter(c => active.has(c));
+      cb.closest(".col-pick-row")?.classList.toggle("active-col", cb.checked);
+
+      const frame = gridNav.stack[gridNav.stack.length - 1];
+      if (frame?.type === "TABLE") {
+        // If new column isn't in existing records data, re-query
+        const needsRequery = cb.checked && frame.records.length > 0 && !(col in frame.records[0]);
+        if (needsRequery) {
+          reQueryGridTable(frame);
+        } else {
+          const prevStatus = els.gridStatus.textContent;
+          renderGridTable(frame);
+          els.gridStatus.textContent = prevStatus;
+          if (gridNav.pickerOpen) renderColPicker(objName, desc);
+        }
+      }
+    });
+  });
+}
+
+async function reQueryGridTable(frame) {
+  const { objectName: childObj, parentField, parentId, desc, nameField } = frame;
+  const activeCols  = gridNav.colState[childObj] || [];
+  const queryFields = ["Id", ...(desc.fieldMap[nameField] ? [nameField] : []), ...activeCols.filter(c => c !== nameField)];
+
+  els.gridStatus.textContent = "loading…";
+  try {
+    const recs = await query(
+      `SELECT ${[...new Set(queryFields)].join(",")} FROM ${childObj} WHERE ${parentField} = '${parentId}' ORDER BY LastModifiedDate DESC LIMIT 200`
+    );
+    await resolveLookupsForRecords(recs, desc);
+    // Merge: preserve dirty input values for fields that were already loaded
+    recs.forEach(r => {
+      const existing = frame.inputValues[r.Id];
+      frame.inputValues[r.Id] = existing ? { ...r, ...existing } : { ...r };
+    });
+    frame.records = recs;
+    renderGridTable(frame);
+    els.gridStatus.textContent = `${recs.length} record${recs.length !== 1 ? "s" : ""}`;
+    if (gridNav.pickerOpen) renderColPicker(childObj, desc);
+  } catch(e) {
+    els.gridStatus.textContent = e.message;
+  }
+}
+
+// ── Page layout field loading ─────────────────────────────────────────────
+
+async function loadLayoutFields(objName) {
+  try {
+    const res = await rest(`/services/data/${API_VERSION}/sobjects/${objName}/describe/layouts/`);
+    const layouts = res.layouts || [];
+    const layout  = layouts.find(l => l.layoutType === "Full") || layouts[0];
+    if (!layout) return null;
+    const fields = [];
+    const extractSection = sec => {
+      for (const row of sec.layoutRows || []) {
+        for (const item of row.layoutItems || []) {
+          for (const comp of item.layoutComponents || []) {
+            if (comp.type === "Field" && comp.value && comp.value !== "EmptySpace") fields.push(comp.value);
+          }
+        }
+      }
+    };
+    for (const sec of layout.detailLayoutSections || []) extractSection(sec);
+    return [...new Set(fields)];
+  } catch { return null; }
+}
+
+async function applyLayoutFields() {
+  const frame = gridNav.stack[gridNav.stack.length - 1];
+  if (frame?.type !== "TABLE") return;
+  const { objectName: childObj, desc } = frame;
+
+  setBusy(els.loadLayoutBtn, "loading…");
+  try {
+    const layoutFields = await loadLayoutFields(childObj);
+    if (!layoutFields?.length) {
+      els.gridStatus.textContent = "no layout found";
+      return;
+    }
+    const allCols    = new Set(getTableCols(desc));
+    const layoutCols = layoutFields.filter(f => allCols.has(f));
+    if (!layoutCols.length) {
+      els.gridStatus.textContent = "no editable layout fields";
+      return;
+    }
+    gridNav.colState[childObj] = layoutCols.slice(0, 14);
+    els.gridStatus.textContent = `layout: ${layoutCols.length} fields`;
+    await reQueryGridTable(frame);
+  } catch(e) {
+    els.gridStatus.textContent = e.message;
+  } finally {
+    resetBtn(els.loadLayoutBtn, "⊡ Reset to Layout");
+  }
 }
 
 // ── Lookup typeahead ──────────────────────────────────────────────────────
@@ -834,8 +1087,8 @@ function toDatetimeLocal(v) {
   return String(v).replace(/(\.\d+)?([Zz]|[+-]\d{2}:?\d{2})$/, "").slice(0, 19);
 }
 
-function datetimeFix(obj) {
-  const desc = state.cache[objectName];
+function datetimeFix(obj, objName = objectName) {
+  const desc = state.cache[objName];
   if (!desc) return;
   Object.keys(obj).forEach(k => {
     if (desc.fieldMap[k]?.type === "datetime" && obj[k] && !String(obj[k]).endsWith("Z")) obj[k] += "Z";

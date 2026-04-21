@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CPQ Records</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="records.css" />
   </head>
   <body>
@@ -35,41 +38,67 @@
           <div class="record-list" id="recordList"></div>
           <button id="loadMore" style="display:none">Load more</button>
         </aside>
-        <section class="records-main-panel">
-          <section class="panel">
-            <div class="panel-head">
-              <h2>Record</h2>
-              <div class="panel-actions">
-                <a id="openSF" target="_blank" title="Open in Salesforce" style="display:none">↗ SF</a>
-                <button id="clone" style="display:none">Clone</button>
-                <button id="delete">Delete</button>
-                <button id="save">Save</button>
+
+        <!-- View container — toggles between records view and grid view -->
+        <div class="view-container">
+
+          <!-- Records view (default) -->
+          <div id="recordsView" class="records-view">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Record</h2>
+                <div class="panel-actions">
+                  <a id="openSF" target="_blank" title="Open in Salesforce" style="display:none">↗ SF</a>
+                  <button id="clone" style="display:none">Clone</button>
+                  <button id="delete">Delete</button>
+                  <button id="save">Save</button>
+                </div>
+              </div>
+              <div class="record-form" id="recordForm"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Related Records</h2>
+              </div>
+              <div class="related-records" id="relatedRecords"></div>
+            </section>
+          </div>
+
+          <!-- Grid view — full-panel spreadsheet for related records -->
+          <div id="gridView" class="grid-view" style="display:none">
+            <div class="grid-toolbar">
+              <nav class="grid-crumb" id="gridCrumb"></nav>
+              <div class="grid-toolbar-right">
+                <span class="grid-status" id="gridStatus"></span>
+                <button id="colPickerBtn" class="btn-icon" style="display:none" title="Customize columns">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="4" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="6" y="3" width="4" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="3" width="4" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>
+                  Columns
+                </button>
+                <button id="gridSave" class="btn-primary" style="display:none">Save Changes</button>
               </div>
             </div>
-            <div class="record-form" id="recordForm"></div>
-          </section>
-          <section class="panel">
-            <div class="panel-head">
-              <h2>Related Records</h2>
+
+            <!-- Column picker panel -->
+            <div id="colPickerPanel" class="col-picker-panel" style="display:none">
+              <div class="col-picker-inner">
+                <div class="col-picker-head">
+                  <span class="col-picker-title">Customize Columns</span>
+                  <div class="col-picker-actions">
+                    <input id="colSearch" type="text" class="col-search" placeholder="Search fields…" />
+                    <button id="loadLayoutBtn" class="btn-xs">⊡ Reset to Layout</button>
+                  </div>
+                </div>
+                <div id="colPickerList" class="col-picker-list"></div>
+              </div>
             </div>
-            <div class="related-records" id="relatedRecords"></div>
-          </section>
-        </section>
+
+            <!-- Spreadsheet body -->
+            <div class="grid-body" id="gridBody"></div>
+          </div>
+
+        </div>
       </section>
     </main>
-    <div id="modal" class="modal-overlay" style="display:none">
-      <div class="modal-box">
-        <div class="modal-head">
-          <nav class="modal-crumb" id="modalCrumb"></nav>
-          <div class="modal-head-right">
-            <span class="modal-status" id="modalStatus"></span>
-            <button id="modalSave">Save</button>
-            <button id="modalClose">✕</button>
-          </div>
-        </div>
-        <div class="modal-body" id="modalBody"></div>
-      </div>
-    </div>
     <script type="module" src="records.js"></script>
   </body>
 </html>
