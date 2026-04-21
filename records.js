@@ -24,8 +24,10 @@ const state = {
 
 // Grid navigation state — replaces modal
 const gridNav = {
-  stack: [],        // Array of frame objects
-  colState: {},     // { [objectName]: string[] } — active column order per object
+  stack: [],
+  colState: {},     // { [objectName]: string[] } — active columns
+  pinnedCols: {},   // { [objectName]: Set<string> } — pinned (frozen) columns
+  sortState: {},    // { [objectName]: { col: string, dir: 'asc'|'desc' } | null }
   pickerOpen: false,
 };
 
@@ -709,9 +711,79 @@ function renderGridView() {
   }
 }
 
+// Returns active columns with pinned ones moved to the front
+function getOrderedCols(objName) {
+  const cols   = gridNav.colState[objName] || [];
+  const pinned = gridNav.pinnedCols[objName] || new Set();
+  return [...cols.filter(c => pinned.has(c)), ...cols.filter(c => !pinned.has(c))];
+}
+
+// Returns records sorted by current sort state (never mutates frame.records)
+function getSortedRecords(frame, objName) {
+  const sort = gridNav.sortState[objName];
+  if (!sort) return frame.records;
+  const { col, dir } = sort;
+  const ftype = frame.desc?.fieldMap[col]?.type;
+  return [...frame.records].sort((a, b) => {
+    let va = a[col] ?? "", vb = b[col] ?? "";
+    if (["int","double","currency","percent"].includes(ftype)) { va = +va||0; vb = +vb||0; }
+    else if (ftype === "boolean") { va = va?1:0; vb = vb?1:0; }
+    else if (ftype === "reference") { va = state.lookupNames[va]||va; vb = state.lookupNames[vb]||vb; }
+    if (va < vb) return dir === "asc" ? -1 : 1;
+    if (va > vb) return dir === "asc" ? 1 : -1;
+    return 0;
+  });
+}
+
+function toggleSortCol(frame, objName, col) {
+  const cur = gridNav.sortState[objName];
+  gridNav.sortState[objName] = cur?.col === col
+    ? (cur.dir === "asc" ? { col, dir: "desc" } : null)
+    : { col, dir: "asc" };
+  renderGridTable(frame);
+}
+
+function togglePinCol(frame, objName, col) {
+  const pinned = gridNav.pinnedCols[objName] || new Set();
+  if (pinned.has(col)) pinned.delete(col); else pinned.add(col);
+  gridNav.pinnedCols[objName] = pinned;
+  renderGridTable(frame);
+  requestAnimationFrame(applyStickyOffsets);
+}
+
+// After render: measure actual widths and apply correct `left` to each sticky column
+function applyStickyOffsets() {
+  const table = els.gridBody.querySelector(".grid-table");
+  if (!table) return;
+  const ths = [...table.querySelectorAll(".grid-thead-row th")];
+  const offsets = {};
+  let left = 0;
+  ths.forEach((th, i) => {
+    if (th.classList.contains("col-th-name") || th.classList.contains("col-pinned")) {
+      th.style.left = left + "px";
+      offsets[i] = left;
+      left += th.offsetWidth;
+    }
+  });
+  const pinnedIdxs = Object.keys(offsets).map(Number);
+  const lastIdx = pinnedIdxs[pinnedIdxs.length - 1];
+  ths.forEach((th, i) => th.classList.toggle("col-pinned-last", i === lastIdx && pinnedIdxs.length > 1));
+  table.querySelectorAll("tbody tr").forEach(row => {
+    [...row.children].forEach((td, i) => {
+      if (i in offsets) {
+        td.style.left = offsets[i] + "px";
+        td.classList.toggle("col-pinned-last", i === lastIdx && pinnedIdxs.length > 1);
+      }
+    });
+  });
+}
+
 function renderGridTable(frame) {
   const { records, desc, inputValues, objectName: childObj, nameField } = frame;
-  const activeCols = gridNav.colState[childObj] || getTableCols(desc).slice(0, 8);
+  const orderedCols = getOrderedCols(childObj);
+  const pinnedSet   = gridNav.pinnedCols[childObj] || new Set();
+  const sort        = gridNav.sortState[childObj];
+  const displayRecs = getSortedRecords(frame, childObj);
 
   els.colPickerBtn.style.display = "";
   els.gridSave.style.display = "";
@@ -724,19 +796,30 @@ function renderGridTable(frame) {
   }
 
   const thead = `<tr class="grid-thead-row">
-    <th class="col-th-name">${escapeHtml(desc.fieldMap[nameField]?.label || "Name")}</th>
-    ${activeCols.map(c =>
-      `<th class="col-th" title="${escapeHtml(c)}">${escapeHtml(desc.fieldMap[c]?.label || humanize(c))}</th>`
-    ).join("")}
+    <th class="col-th-name">
+      <div class="col-th-inner"><span class="col-th-label">${escapeHtml(desc.fieldMap[nameField]?.label || "Name")}</span></div>
+    </th>
+    ${orderedCols.map(c => {
+      const isPinned = pinnedSet.has(c);
+      const isSort   = sort?.col === c;
+      const sortIcon = isSort ? `<span class="sort-icon">${sort.dir === "asc" ? "↑" : "↓"}</span>` : "";
+      return `<th class="col-th${isPinned ? " col-pinned" : ""}" title="${escapeHtml(c)}">
+        <div class="col-th-inner">
+          <span class="col-th-label${isSort ? " col-th-sorted" : ""}" data-sort-col="${escapeHtml(c)}">${escapeHtml(desc.fieldMap[c]?.label || humanize(c))}${sortIcon}</span>
+          <button class="col-pin-btn${isPinned ? " is-pinned" : ""}" data-pin-col="${escapeHtml(c)}" title="${isPinned ? "Unpin" : "Pin column"}">${isPinned ? "◈" : "◇"}</button>
+        </div>
+      </th>`;
+    }).join("")}
     <th class="col-th"></th>
   </tr>`;
 
-  const tbody = records.map(r => {
-    const vals = inputValues[r.Id];
-    const rowDirty = activeCols.some(c => vals[c] !== r[c]);
-    const cells = activeCols.map(c => {
-      const dirty = vals[c] !== r[c];
-      return `<td class="grid-cell${dirty ? " cell-dirty" : ""}">${renderCellInput(r.Id, c, vals[c], desc.fieldMap[c])}</td>`;
+  const tbody = displayRecs.map(r => {
+    const vals     = inputValues[r.Id];
+    const rowDirty = orderedCols.some(c => vals[c] !== r[c]);
+    const cells    = orderedCols.map(c => {
+      const isPinned = pinnedSet.has(c);
+      const dirty    = vals[c] !== r[c];
+      return `<td class="grid-cell${dirty ? " cell-dirty" : ""}${isPinned ? " col-pinned" : ""}">${renderCellInput(r.Id, c, vals[c], desc.fieldMap[c])}</td>`;
     });
     const sfHref = host ? `${host}/lightning/r/${escapeHtml(childObj)}/${escapeHtml(r.Id)}/view` : "#";
     return `<tr class="grid-row${rowDirty ? " row-dirty" : ""}" data-row-id="${escapeHtml(r.Id)}">
@@ -751,34 +834,43 @@ function renderGridTable(frame) {
 
   els.gridBody.innerHTML = `<div class="grid-table-wrap"><table class="grid-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table></div>`;
 
-  // Wire cell change events
+  // Sort on label click
+  els.gridBody.querySelectorAll("[data-sort-col]").forEach(el =>
+    el.addEventListener("click", () => toggleSortCol(frame, childObj, el.dataset.sortCol))
+  );
+
+  // Pin toggle
+  els.gridBody.querySelectorAll("[data-pin-col]").forEach(btn =>
+    btn.addEventListener("click", e => { e.stopPropagation(); togglePinCol(frame, childObj, btn.dataset.pinCol); })
+  );
+
+  // Cell change events
   els.gridBody.querySelectorAll("[data-record]").forEach(input => {
     const rid   = input.dataset.record;
     const field = input.dataset.field;
     const ev    = input.type === "checkbox" ? "change" : "input";
     input.addEventListener(ev, () => {
       const orig = frame.records.find(r => r.Id === rid)?.[field] ?? null;
-      const val = input.type === "checkbox" ? input.checked : coerceValue(input.value);
+      const val  = input.type === "checkbox" ? input.checked : coerceValue(input.value);
       frame.inputValues[rid][field] = val;
       input.closest("td")?.classList.toggle("cell-dirty", orig !== val);
       const row = input.closest("tr[data-row-id]");
       if (row) {
-        const cols = gridNav.colState[frame.objectName] || [];
-        const rec  = frame.records.find(r => r.Id === rid);
-        row.classList.toggle("row-dirty", cols.some(c => frame.inputValues[rid]?.[c] !== rec?.[c]));
+        const rec = frame.records.find(r => r.Id === rid);
+        row.classList.toggle("row-dirty", orderedCols.some(c => frame.inputValues[rid]?.[c] !== rec?.[c]));
       }
     });
   });
 
-  // Drill-in buttons
+  // Drill-in
   els.gridBody.querySelectorAll(".drill-btn").forEach(btn =>
     btn.addEventListener("click", () =>
       pushGridDetailFrame(btn.dataset.obj, btn.dataset.id, btn.dataset.name)
     )
   );
 
-  // Re-render col picker if it's open
   if (gridNav.pickerOpen) renderColPicker(childObj, desc);
+  requestAnimationFrame(applyStickyOffsets);
 }
 
 function renderGridDetail(frame) {
@@ -953,7 +1045,7 @@ function renderColPicker(objName, desc) {
 
 async function reQueryGridTable(frame) {
   const { objectName: childObj, parentField, parentId, desc, nameField } = frame;
-  const activeCols  = gridNav.colState[childObj] || [];
+  const activeCols  = gridNav.colState[childObj] || [];  // always query all active cols
   const queryFields = ["Id", ...(desc.fieldMap[nameField] ? [nameField] : []), ...activeCols.filter(c => c !== nameField)];
 
   els.gridStatus.textContent = "loading…";

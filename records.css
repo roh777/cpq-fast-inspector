@@ -596,8 +596,8 @@ select[multiple] { height: auto; min-height: 60px; }
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 14px;
-  height: 44px;
+  padding: 0 12px;
+  height: 38px;
   background: #ffffff;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -786,31 +786,91 @@ select[multiple] { height: auto; min-height: 60px; }
 }
 
 .grid-thead-row th {
-  background: #f1f5f9;
-  padding: 0 10px;
-  height: 32px;
+  background: #f8fafc;
+  padding: 0;
+  height: 26px;
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: .06em;
+  letter-spacing: .05em;
   text-transform: uppercase;
   color: var(--muted);
-  border-bottom: 2px solid var(--border);
+  border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border-light);
   text-align: left;
   white-space: nowrap;
   user-select: none;
 }
-.grid-thead-row th:last-child { border-right: none; width: 80px; }
+.grid-thead-row th:last-child { border-right: none; width: 60px; }
+
+/* Column header inner layout — label + sort icon + pin button */
+.col-th-inner {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  height: 100%;
+}
+.col-th-label {
+  flex: 1;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.col-th-label:hover { color: var(--text); }
+.col-th-sorted { color: var(--accent) !important; }
+.sort-icon { font-size: 9px; opacity: .8; flex-shrink: 0; }
+
+/* Pin button — shown on th hover, always shown if pinned */
+.col-pin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 2px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 0;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 400;
+  transition: opacity .1s, color .12s, background .12s;
+}
+.col-th:hover .col-pin-btn { opacity: 1; }
+.col-pin-btn.is-pinned { opacity: 1; color: var(--accent); }
+.col-pin-btn:hover { background: var(--border-light); color: var(--text); }
 
 /* Frozen first column in header */
 .col-th-name {
   position: sticky;
   left: 0;
   z-index: 11;
-  background: #e8edf4 !important;
+  background: #f1f5f9 !important;
   border-right: 2px solid var(--border) !important;
-  min-width: 140px;
-  max-width: 200px;
+  min-width: 130px;
+  max-width: 190px;
+}
+
+/* Extra pinned columns */
+.col-th.col-pinned {
+  position: sticky;
+  z-index: 10;
+  background: #f5f7fa !important;
+}
+
+/* Shadow separator on the last pinned column */
+.col-pinned-last {
+  box-shadow: 3px 0 6px -1px rgba(0,0,0,.07);
 }
 
 /* Data rows */
@@ -847,14 +907,14 @@ select[multiple] { height: auto; min-height: 60px; }
   display: block;
   border: none;
   border-radius: 0;
-  padding: 0 9px;
-  font-size: 13px;
+  padding: 0 8px;
+  font-size: 12px;
   font-family: 'Geist', system-ui, sans-serif;
   width: 100%;
-  min-width: 110px;
+  min-width: 100px;
   background: transparent;
-  height: 32px;
-  line-height: 32px;
+  height: 28px;
+  line-height: 28px;
   color: var(--text);
   outline: none;
   transition: background .08s, box-shadow .08s;
@@ -866,18 +926,8 @@ select[multiple] { height: auto; min-height: 60px; }
   position: relative;
   z-index: 2;
 }
-.grid-cell .cb-wrap {
-  padding: 0 9px;
-  height: 32px;
-  font-size: 12px;
-  font-family: 'Geist', system-ui, sans-serif;
-  min-height: unset;
-}
-.grid-cell .lookup-wrap input { min-width: 110px; height: 32px; }
-.grid-cell .lookup-name {
-  font-size: 9px;
-  padding: 0 9px 3px;
-}
+.grid-cell .lookup-wrap input { min-width: 100px; height: 28px; }
+.grid-cell .lookup-name { font-size: 9px; padding: 0 8px 2px; }
 
 /* Name column (sticky) */
 .grid-name-cell {
@@ -887,13 +937,13 @@ select[multiple] { height: auto; min-height: 60px; }
   background: var(--panel);
   border-bottom: 1px solid var(--border-light);
   border-right: 2px solid var(--border);
-  padding: 0 10px;
-  height: 32px;
+  padding: 0 8px;
+  height: 28px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-2);
   white-space: nowrap;
-  max-width: 200px;
+  max-width: 190px;
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: middle;
@@ -902,12 +952,21 @@ select[multiple] { height: auto; min-height: 60px; }
 .grid-row:nth-child(even) .grid-name-cell { background: #fafcff; }
 .grid-row.row-dirty .grid-name-cell { background: #fffef5 !important; }
 
+/* Pinned body cells */
+.grid-cell.col-pinned {
+  position: sticky;
+  z-index: 2;
+  background: #fdfeff;
+}
+.grid-row:nth-child(even) .grid-cell.col-pinned { background: #f9fbff; }
+.grid-row.row-dirty .grid-cell.col-pinned { background: #fffef5 !important; }
+
 /* Actions column */
 .grid-action-cell {
   border-bottom: 1px solid var(--border-light);
-  padding: 0 8px;
+  padding: 0 5px;
   white-space: nowrap;
-  width: 72px;
+  width: 52px;
   vertical-align: middle;
   text-align: right;
 }
@@ -915,9 +974,9 @@ select[multiple] { height: auto; min-height: 60px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  font-size: 11px;
+  width: 20px;
+  height: 20px;
+  font-size: 10px;
   color: #94a3b8;
   border: 1px solid transparent;
   border-radius: var(--r);
@@ -933,10 +992,10 @@ select[multiple] { height: auto; min-height: 60px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 0;
   text-transform: none;
   border: 1px solid var(--border);
@@ -957,11 +1016,11 @@ select[multiple] { height: auto; min-height: 60px; }
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 32px;
+  height: 28px;
 }
 .cell-bool input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   margin: 0;
   padding: 0;
   accent-color: var(--accent);
@@ -973,12 +1032,12 @@ select[multiple] { height: auto; min-height: 60px; }
 /* Lookup cells — name is primary, ID revealed on hover/focus */
 .lookup-display-name {
   display: block;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-2);
-  padding: 0 9px;
-  height: 32px;
-  line-height: 32px;
+  padding: 0 8px;
+  height: 28px;
+  line-height: 28px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
