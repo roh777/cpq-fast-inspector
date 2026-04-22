@@ -323,13 +323,11 @@ function patchLookupNames(desc) {
     .forEach(f => {
       const name = state.lookupNames[state.selected[f.name]];
       if (!name) return;
-      const input = els.recordForm.querySelector(`[data-field="${f.name}"]`);
+      const input = els.recordForm.querySelector(`.form-lookup-input[data-field="${f.name}"]`);
       if (!input) return;
-      const wrap = input.closest(".lookup-wrap");
-      if (!wrap) return;
-      let span = wrap.querySelector(".lookup-name");
-      if (!span) { span = document.createElement("span"); span.className = "lookup-name"; wrap.appendChild(span); }
-      span.textContent = name;
+      input.value = name;
+      input._prevDisplay = name;
+      input.classList.add("lookup-has-value");
     });
 }
 
@@ -478,8 +476,9 @@ function renderInput(field, value, meta) {
   if (["int","double","currency","percent"].includes(type))
     return `${lbl}<input type="number" ${a} value="${escapeAttribute(String(v))}">`;
   if (type === "reference") {
-    const name = state.lookupNames[v] || "";
-    return `${lbl}<div class="lookup-wrap"><input ${a} value="${escapeAttribute(String(v))}" placeholder="${escapeAttribute(name || meta?.referenceTo?.[0] || "ID")}">${name ? `<span class="lookup-name">${escapeHtml(name)}</span>` : ""}</div>`;
+    const name   = state.lookupNames[v] || "";
+    const refObj = meta?.referenceTo?.[0] || "";
+    return `${lbl}<div class="lookup-wrap"><input class="form-lookup-input${name ? " lookup-has-value" : ""}" ${a} value="${escapeAttribute(name)}" placeholder="Search ${escapeHtml(refObj)}…" data-ref-obj="${escapeAttribute(refObj)}" data-current-id="${escapeAttribute(String(v))}"></div>`;
   }
   return `${lbl}<input ${a} value="${escapeAttribute(String(v))}">`;
 }
@@ -519,6 +518,10 @@ function wireFormEvents(container, desc, inputValues, originalRecord) {
     const field = el.dataset.field;
     const meta  = desc.fieldMap[field];
     if (el.readOnly || el.disabled || field === "Id") return;
+    if (meta?.type === "reference" && el.tagName === "INPUT") {
+      attachLookup(el, meta.referenceTo, inputValues, originalRecord);
+      return;
+    }
     const ev = el.type === "checkbox" ? "change" : "input";
     el.addEventListener(ev, () => {
       let val;
@@ -534,7 +537,6 @@ function wireFormEvents(container, desc, inputValues, originalRecord) {
       inputValues[field] = val;
       el.closest(".field")?.classList.toggle("field-dirty", !state.isNew && originalRecord?.[field] !== val);
     });
-    if (meta?.type === "reference" && el.tagName === "INPUT") attachLookup(el, meta.referenceTo);
   });
 }
 
@@ -1175,19 +1177,31 @@ async function applyLayoutFields() {
 
 let _dd = null, _ddTimer = null;
 
-function attachLookup(input, referenceTo) {
+function attachLookup(input, referenceTo, inputValues, originalRecord) {
   if (!referenceTo?.length) return;
   const target = referenceTo[0];
+  input.addEventListener("focus", () => {
+    input._prevDisplay = input.value;
+    input.value = "";
+    input.classList.remove("lookup-has-value");
+  });
   input.addEventListener("input", () => {
     clearTimeout(_ddTimer);
     const term = input.value.trim();
     if (term.length < 2 || /^[a-zA-Z0-9]{15,18}$/.test(term)) { hideLookup(); return; }
-    _ddTimer = setTimeout(() => fetchLookup(input, target, term), 300);
+    _ddTimer = setTimeout(() => fetchLookup(input, target, term, inputValues, originalRecord), 300);
   });
-  input.addEventListener("blur", () => setTimeout(hideLookup, 200));
+  input.addEventListener("blur", () => setTimeout(() => {
+    hideLookup();
+    if (!input._justSelected) {
+      input.value = input._prevDisplay || "";
+      if (input._prevDisplay) input.classList.add("lookup-has-value");
+    }
+    input._justSelected = false;
+  }, 200));
 }
 
-async function fetchLookup(input, target, term) {
+async function fetchLookup(input, target, term, inputValues, originalRecord) {
   try {
     const safe = term.replace(/'/g, "\\'");
     const recs = await query(`SELECT Id, Name FROM ${target} WHERE Name LIKE '%${safe}%' LIMIT 8`);
@@ -1202,18 +1216,17 @@ async function fetchLookup(input, target, term) {
       opt.addEventListener("mousedown", e => {
         e.preventDefault();
         const field = input.dataset.field;
-        state.inputValues[field] = r.Id;
+        if (inputValues) inputValues[field] = r.Id;
         state.lookupNames[r.Id] = r.Name;
-        input.value = r.Id;
-        input.placeholder = r.Name;
-        input.closest(".field")?.classList.add("field-dirty");
-        const wrap = input.closest(".lookup-wrap");
-        if (wrap) {
-          let span = wrap.querySelector(".lookup-name");
-          if (!span) { span = document.createElement("span"); span.className = "lookup-name"; wrap.appendChild(span); }
-          span.textContent = r.Name;
-        }
+        input.value = r.Name;
+        input.dataset.currentId = r.Id;
+        input._prevDisplay = r.Name;
+        input._justSelected = true;
+        input.classList.add("lookup-has-value");
+        const orig = originalRecord?.[field];
+        input.closest(".field")?.classList.toggle("field-dirty", !state.isNew && orig !== r.Id);
         hideLookup();
+        input.blur();
       });
       dd.appendChild(opt);
     });

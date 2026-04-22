@@ -162,7 +162,7 @@ body { display: flex; flex-direction: column; }
   display: block;
   text-align: left;
   width: 100%;
-  padding: 6px 10px;
+  padding: 4px 8px;
   border: none;
   border-bottom: 1px solid var(--border-light);
   border-radius: 0;
@@ -221,8 +221,8 @@ body { display: flex; flex-direction: column; }
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 5px 10px;
-  border-bottom: 2px solid var(--border);
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
   background: #f8fafc;
   flex-shrink: 0;
 }
@@ -356,9 +356,9 @@ input:focus, select:focus, textarea:focus {
 }
 
 .field label {
-  padding: 3px 8px;
-  font-size: 9px;
-  font-weight: 600;
+  padding: 2px 7px;
+  font-size: 8.5px;
+  font-weight: 700;
   letter-spacing: .07em;
   text-transform: uppercase;
   color: var(--muted);
@@ -384,12 +384,12 @@ input:focus, select:focus, textarea:focus {
 .field textarea {
   border: none;
   border-radius: 0;
-  padding: 5px 8px;
+  padding: 3px 7px;
   font-size: 11px;
   font-family: var(--mono);
   width: 100%;
   background: transparent;
-  min-height: 28px;
+  min-height: 24px;
 }
 .field input:focus,
 .field select:focus,
@@ -435,11 +435,11 @@ select[multiple] { height: auto; min-height: 60px; }
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
+  padding: 3px 7px;
   font-size: 11px;
   font-family: var(--mono);
   cursor: pointer;
-  min-height: 28px;
+  min-height: 24px;
 }
 .cb-wrap input[type="checkbox"] {
   width: auto;
@@ -454,17 +454,21 @@ select[multiple] { height: auto; min-height: 60px; }
 /* lookup */
 .lookup-wrap { position: relative; display: flex; flex-direction: column; flex: 1; }
 .lookup-wrap input { flex: 1; }
-.lookup-name {
-  font-size: 10px;
-  color: var(--accent);
-  font-family: inherit;
+
+/* Form lookup — input shows name in accent; becomes a search field on focus */
+.form-lookup-input.lookup-has-value {
+  color: var(--accent-dark);
   font-weight: 600;
-  padding: 1px 8px 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  letter-spacing: 0;
+  background: var(--accent-bg);
+  font-family: inherit;
 }
+.form-lookup-input.lookup-has-value:focus {
+  color: var(--text);
+  font-weight: 400;
+  background: #fffdf5;
+  font-family: var(--mono);
+}
+.form-lookup-input::placeholder { color: var(--muted); font-weight: 400; font-family: inherit; }
 .lookup-dd {
   position: absolute; top: 100%; left: 0; right: 0; z-index: 999;
   background: var(--panel);
