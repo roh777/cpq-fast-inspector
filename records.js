@@ -152,10 +152,16 @@ async function boot() {
 
 // ── Record list loading ───────────────────────────────────────────────────
 
-function buildQuery() {
+function buildQuery(desc) {
   const parts = [];
   const term = els.filter.value.trim();
-  if (term) parts.push(`Name LIKE '%${term.replace(/'/g,"\\'")}%'`);
+  if (term) {
+    const safe = term.replace(/'/g, "\\'");
+    const nameField =
+      desc?.fields.find(f => f.nameField && f.filterable)?.name ||
+      (desc?.fieldMap["Name"]?.filterable ? "Name" : null);
+    if (nameField) parts.push(`${nameField} LIKE '%${safe}%'`);
+  }
   if (timeFilter === "7d") parts.push("LastModifiedDate = LAST_N_DAYS:7");
   const where = parts.length ? `WHERE ${parts.join(" AND ")}` : "";
   const order = timeFilter === "oldest" ? "LastModifiedDate ASC" : "LastModifiedDate DESC";
@@ -167,7 +173,12 @@ async function loadRecords() {
   try {
     const desc = await describe();
     const cfg  = deriveConfig(desc);
-    const { where, order } = buildQuery();
+    const nameField = desc.fields.find(f => f.nameField && f.filterable)?.name
+      || (desc.fieldMap["Name"]?.filterable ? "Name" : null);
+    els.filter.placeholder = nameField
+      ? `Search ${desc.label || humanize(objectName)} by ${desc.fieldMap[nameField]?.label || nameField}…`
+      : `Search ${desc.label || humanize(objectName)}…`;
+    const { where, order } = buildQuery(desc);
     const resp = await rawQuery(
       `SELECT ${cfg.listFields.join(",")} FROM ${objectName} ${where} ORDER BY ${order} LIMIT 100`
     );
