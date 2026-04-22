@@ -771,11 +771,12 @@ select[multiple] { height: auto; min-height: 60px; }
 }
 
 .grid-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 12px;
   font-family: 'Geist', system-ui, sans-serif;
-  table-layout: auto;
+  table-layout: fixed;
 }
 
 /* Sticky header */
@@ -800,6 +801,7 @@ select[multiple] { height: auto; min-height: 60px; }
   white-space: nowrap;
   user-select: none;
 }
+.grid-thead-row th { width: 150px; }
 .grid-thead-row th:last-child { border-right: none; width: 60px; }
 
 /* Column header inner layout — label + sort icon + pin button */
@@ -1029,25 +1031,45 @@ select[multiple] { height: auto; min-height: 60px; }
   border: none;
 }
 
-/* Lookup cells — name is primary, ID revealed on hover/focus */
-.lookup-display-name {
+/* Lookup cells in grid — colored chip, search input appears on focus */
+.cell-lookup { position: relative; display: flex; align-items: stretch; }
+.cell-lookup-chip {
   display: block;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-2);
+  flex: 1;
   padding: 0 8px;
   height: 28px;
   line-height: 28px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent-dark);
+  background: var(--accent-bg);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: text;
+  cursor: pointer;
+  border-radius: 3px;
+  margin: 2px 4px;
+  user-select: none;
 }
-.lookup-id-input { display: none; }
-.lookup-has-name:hover .lookup-display-name,
-.lookup-has-name:focus-within .lookup-display-name { display: none; }
-.lookup-has-name:hover .lookup-id-input,
-.lookup-has-name:focus-within .lookup-id-input { display: block; }
+.cell-lookup-chip.cell-lookup-empty {
+  color: var(--muted);
+  background: transparent;
+  font-weight: 400;
+  font-style: italic;
+}
+.cell-lookup-input { display: none; }
+.cell-lookup:focus-within .cell-lookup-chip { display: none; }
+.cell-lookup:focus-within .cell-lookup-input {
+  display: block;
+  flex: 1;
+  width: 100%;
+}
+
+/* Drag-and-drop column reorder */
+.col-th[draggable] { cursor: grab; }
+.col-th[draggable]:active { cursor: grabbing; }
+.col-th.drag-over { background: var(--accent-bg) !important; outline: 2px solid var(--accent); outline-offset: -2px; }
+.col-th.col-dragging { opacity: .4; }
 
 /* Empty state */
 .grid-empty {

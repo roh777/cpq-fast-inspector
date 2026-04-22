@@ -234,6 +234,7 @@ async function describe(obj = objectName) {
   const p = await rest(`/services/data/${API_VERSION}/sobjects/${obj}/describe`);
   const fields = p.fields || [];
   state.cache[obj] = {
+    label: p.label || humanize(obj),
     fields,
     fieldMap: Object.fromEntries(fields.map(f => [f.name, f])),
     childRelationships: p.childRelationships || [],
@@ -417,9 +418,10 @@ function renderRelated() {
   const pillHtml = ({ g, i }) => {
     const hasRecs = g.count > 0;
     const pending = g.count === null;
+    const label   = state.cache[g.childSObject]?.label || humanize(g.childSObject);
     return `<div class="rel-group${hasRecs ? " rel-has-records" : ""}${pending ? " rel-pending" : ""}">
       <div class="rel-head" data-idx="${i}">
-        <span class="rel-name">${escapeHtml(g.relationshipName)}</span>
+        <span class="rel-name">${escapeHtml(label)}</span>
         <span class="rel-badge">${pending ? "…" : g.count}</span>
       </div>
     </div>`;
@@ -501,14 +503,13 @@ function renderCellInput(recordId, field, value, meta) {
   if (["int","double","currency","percent"].includes(type))
     return `<input type="number" ${a} value="${escapeAttribute(String(v))}">`;
   if (type === "reference") {
-    const name = state.lookupNames[v] || "";
-    if (name) {
-      return `<div class="lookup-wrap lookup-has-name">
-        <span class="lookup-display-name">${escapeHtml(name)}</span>
-        <input class="lookup-id-input" ${a} value="${escapeAttribute(String(v))}" placeholder="${escapeAttribute(meta?.referenceTo?.[0] || "ID")}">
-      </div>`;
-    }
-    return `<div class="lookup-wrap"><input ${a} value="${escapeAttribute(String(v))}" placeholder="${escapeAttribute(meta?.referenceTo?.[0] || "ID")}"></div>`;
+    const name   = state.lookupNames[v] || "";
+    const refObj = meta?.referenceTo?.[0] || "";
+    const chip   = name || (v ? "…" : "—");
+    return `<div class="lookup-wrap cell-lookup">
+      <span class="cell-lookup-chip${!name ? " cell-lookup-empty" : ""}">${escapeHtml(chip)}</span>
+      <input class="cell-lookup-input" ${a} value="" placeholder="Search ${escapeHtml(refObj)}…" data-ref-obj="${escapeAttribute(refObj)}" data-current-id="${escapeAttribute(String(v))}">
+    </div>`;
   }
   return `<input ${a} value="${escapeAttribute(String(v))}">`;
 }
@@ -560,7 +561,8 @@ async function openGridView(groupIdx) {
   if (!g || !state.selected) return;
   gridNav.stack = [];
   const parentLabel = state.selected.Name || state.selected.Id;
-  await pushGridTableFrame(g.childSObject, g.field, g.relationshipName, state.selected.Id, parentLabel);
+  const childLabel  = state.cache[g.childSObject]?.label || humanize(g.childSObject);
+  await pushGridTableFrame(g.childSObject, g.field, childLabel, state.selected.Id, parentLabel);
   showGridView();
 }
 
@@ -745,7 +747,13 @@ function toggleSortCol(frame, objName, col) {
 
 function togglePinCol(frame, objName, col) {
   const pinned = gridNav.pinnedCols[objName] || new Set();
-  if (pinned.has(col)) pinned.delete(col); else pinned.add(col);
+  if (pinned.has(col)) {
+    pinned.delete(col);
+  } else {
+    pinned.add(col);
+    const cols = gridNav.colState[objName] || [];
+    gridNav.colState[objName] = [col, ...cols.filter(c => c !== col)];
+  }
   gridNav.pinnedCols[objName] = pinned;
   renderGridTable(frame);
   requestAnimationFrame(applyStickyOffsets);
@@ -803,7 +811,7 @@ function renderGridTable(frame) {
       const isPinned = pinnedSet.has(c);
       const isSort   = sort?.col === c;
       const sortIcon = isSort ? `<span class="sort-icon">${sort.dir === "asc" ? "↑" : "↓"}</span>` : "";
-      return `<th class="col-th${isPinned ? " col-pinned" : ""}" title="${escapeHtml(c)}">
+      return `<th class="col-th${isPinned ? " col-pinned" : ""}" title="${escapeHtml(c)}" data-th-col="${escapeHtml(c)}" draggable="true">
         <div class="col-th-inner">
           <span class="col-th-label${isSort ? " col-th-sorted" : ""}" data-sort-col="${escapeHtml(c)}">${escapeHtml(desc.fieldMap[c]?.label || humanize(c))}${sortIcon}</span>
           <button class="col-pin-btn${isPinned ? " is-pinned" : ""}" data-pin-col="${escapeHtml(c)}" title="${isPinned ? "Unpin" : "Pin column"}">${isPinned ? "◈" : "◇"}</button>
@@ -844,10 +852,11 @@ function renderGridTable(frame) {
     btn.addEventListener("click", e => { e.stopPropagation(); togglePinCol(frame, childObj, btn.dataset.pinCol); })
   );
 
-  // Cell change events
+  // Cell change events (skip reference — handled by attachGridLookup)
   els.gridBody.querySelectorAll("[data-record]").forEach(input => {
     const rid   = input.dataset.record;
     const field = input.dataset.field;
+    if (frame.desc?.fieldMap[field]?.type === "reference") return;
     const ev    = input.type === "checkbox" ? "change" : "input";
     input.addEventListener(ev, () => {
       const orig = frame.records.find(r => r.Id === rid)?.[field] ?? null;
@@ -868,6 +877,47 @@ function renderGridTable(frame) {
       pushGridDetailFrame(btn.dataset.obj, btn.dataset.id, btn.dataset.name)
     )
   );
+
+  // Lookup chip click → focus search input
+  els.gridBody.querySelectorAll(".cell-lookup-chip").forEach(chip =>
+    chip.addEventListener("click", () =>
+      chip.closest(".cell-lookup")?.querySelector(".cell-lookup-input")?.focus()
+    )
+  );
+
+  // Grid lookup typeahead
+  els.gridBody.querySelectorAll(".cell-lookup-input").forEach(input =>
+    attachGridLookup(input, frame, orderedCols)
+  );
+
+  // Column drag-and-drop reorder
+  let _dragSrcCol = null;
+  els.gridBody.querySelectorAll("[data-th-col]").forEach(th => {
+    th.addEventListener("dragstart", e => {
+      _dragSrcCol = th.dataset.thCol;
+      e.dataTransfer.effectAllowed = "move";
+      th.classList.add("col-dragging");
+    });
+    th.addEventListener("dragend", () => th.classList.remove("col-dragging"));
+    th.addEventListener("dragover", e => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; th.classList.add("drag-over"); });
+    th.addEventListener("dragleave", () => th.classList.remove("drag-over"));
+    th.addEventListener("drop", e => {
+      e.preventDefault();
+      th.classList.remove("drag-over");
+      const targetCol = th.dataset.thCol;
+      if (!_dragSrcCol || _dragSrcCol === targetCol) { _dragSrcCol = null; return; }
+      const cols = [...(gridNav.colState[childObj] || [])];
+      const fromIdx = cols.indexOf(_dragSrcCol);
+      const toIdx   = cols.indexOf(targetCol);
+      if (fromIdx < 0 || toIdx < 0) { _dragSrcCol = null; return; }
+      cols.splice(fromIdx, 1);
+      cols.splice(toIdx, 0, _dragSrcCol);
+      gridNav.colState[childObj] = cols;
+      _dragSrcCol = null;
+      renderGridTable(frame);
+      requestAnimationFrame(applyStickyOffsets);
+    });
+  });
 
   if (gridNav.pickerOpen) renderColPicker(childObj, desc);
   requestAnimationFrame(applyStickyOffsets);
@@ -893,13 +943,15 @@ function renderGridDetail(frame) {
     if (rank(a) !== rank(b)) return rank(a) - rank(b);
     return a.g.relationshipName.localeCompare(b.g.relationshipName);
   });
-  const pillHtml = ({ g, i }) =>
-    `<div class="rel-group${g.count > 0 ? " rel-has-records" : ""}${g.count === null ? " rel-pending" : ""}">
+  const pillHtml = ({ g, i }) => {
+    const label = state.cache[g.childSObject]?.label || humanize(g.childSObject);
+    return `<div class="rel-group${g.count > 0 ? " rel-has-records" : ""}${g.count === null ? " rel-pending" : ""}">
       <div class="rel-head" data-detail-rel="${i}">
-        <span class="rel-name">${escapeHtml(g.relationshipName)}</span>
+        <span class="rel-name">${escapeHtml(label)}</span>
         <span class="rel-badge" data-rel-badge="${i}">${g.count === null ? "…" : g.count}</span>
       </div>
     </div>`;
+  };
 
   let relHtml = "";
   if (relatedGroups.length) {
@@ -924,7 +976,7 @@ function renderGridDetail(frame) {
   els.gridBody.querySelectorAll("[data-detail-rel]").forEach(h =>
     h.addEventListener("click", () => {
       const g = frame.relatedGroups[+h.dataset.detailRel];
-      if (g) pushGridTableFrame(g.childSObject, g.field, g.relationshipName, record.Id, frame.label);
+      if (g) pushGridTableFrame(g.childSObject, g.field, state.cache[g.childSObject]?.label || humanize(g.childSObject), record.Id, frame.label);
     })
   );
 }
@@ -1173,6 +1225,60 @@ async function fetchLookup(input, target, term) {
 }
 
 function hideLookup() { _dd?.remove(); _dd = null; }
+
+function attachGridLookup(input, frame, orderedCols) {
+  const refObj = input.dataset.refObj;
+  if (!refObj) return;
+  input.addEventListener("input", () => {
+    clearTimeout(_ddTimer);
+    const term = input.value.trim();
+    if (term.length < 2) { hideLookup(); return; }
+    _ddTimer = setTimeout(() => fetchGridLookup(input, refObj, term, frame, orderedCols), 300);
+  });
+  input.addEventListener("blur", () => setTimeout(hideLookup, 200));
+}
+
+async function fetchGridLookup(input, target, term, frame, orderedCols) {
+  try {
+    const safe = term.replace(/'/g, "\\'");
+    const recs = await query(`SELECT Id, Name FROM ${target} WHERE Name LIKE '%${safe}%' LIMIT 8`);
+    if (!recs.length) { hideLookup(); return; }
+    hideLookup();
+    const dd = document.createElement("div");
+    dd.className = "lookup-dd";
+    recs.forEach(r => {
+      const opt = document.createElement("div");
+      opt.className = "lookup-opt";
+      opt.textContent = r.Name;
+      opt.addEventListener("mousedown", e => {
+        e.preventDefault();
+        const rid   = input.dataset.record;
+        const field = input.dataset.field;
+        frame.inputValues[rid][field] = r.Id;
+        state.lookupNames[r.Id] = r.Name;
+        const wrap = input.closest(".cell-lookup");
+        const chip = wrap?.querySelector(".cell-lookup-chip");
+        if (chip) { chip.textContent = r.Name; chip.classList.remove("cell-lookup-empty"); }
+        input.dataset.currentId = r.Id;
+        input.value = "";
+        const orig = frame.records.find(rec => rec.Id === rid)?.[field] ?? null;
+        input.closest("td")?.classList.toggle("cell-dirty", r.Id !== orig);
+        const row = input.closest("tr[data-row-id]");
+        if (row) {
+          const rec = frame.records.find(rec => rec.Id === rid);
+          row.classList.toggle("row-dirty", orderedCols.some(c => frame.inputValues[rid]?.[c] !== rec?.[c]));
+        }
+        hideLookup();
+        input.blur();
+      });
+      dd.appendChild(opt);
+    });
+    const wrap = input.closest(".cell-lookup") || input.parentElement;
+    wrap.style.position = "relative";
+    wrap.appendChild(dd);
+    _dd = dd;
+  } catch { hideLookup(); }
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────
 
