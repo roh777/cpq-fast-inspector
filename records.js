@@ -2,6 +2,32 @@ const API_VERSION = "v60.0";
 const params = new URLSearchParams(window.location.search);
 const host = params.get("host") || "";
 const objectName = params.get("object") || "Product2";
+
+const CPQ_OBJECTS = [
+  { apiName: "Product2",                        label: "Products" },
+  { apiName: "PricebookEntry",                  label: "Pricebook Entries" },
+  { apiName: "Account",                         label: "Accounts" },
+  { apiName: "Opportunity",                     label: "Opportunities" },
+  { apiName: "Contact",                         label: "Contacts" },
+  { apiName: "SBQQ__Quote__c",                  label: "CPQ Quotes" },
+  { apiName: "SBQQ__QuoteLine__c",              label: "Quote Lines" },
+  { apiName: "SBQQ__ProductOption__c",          label: "Product Options" },
+  { apiName: "SBQQ__ProductFeature__c",         label: "Product Features" },
+  { apiName: "SBQQ__ConfigurationAttribute__c", label: "Config Attributes" },
+  { apiName: "SBQQ__OptionConstraint__c",       label: "Option Constraints" },
+  { apiName: "SBQQ__ProductRule__c",            label: "Product Rules" },
+  { apiName: "SBQQ__ErrorCondition__c",         label: "Error Conditions" },
+  { apiName: "SBQQ__PriceRule__c",              label: "Price Rules" },
+  { apiName: "SBQQ__PriceAction__c",            label: "Price Actions" },
+  { apiName: "SBQQ__LookupQuery__c",            label: "Lookup Queries" },
+  { apiName: "SBQQ__SummaryVariable__c",        label: "Summary Variables" },
+  { apiName: "SBQQ__DiscountSchedule__c",       label: "Discount Schedules" },
+  { apiName: "SBQQ__DiscountTier__c",           label: "Discount Tiers" },
+  { apiName: "SBQQ__QuoteTemplate__c",          label: "Quote Templates" },
+  { apiName: "SBQQ__CustomAction__c",           label: "Custom Actions" },
+  { apiName: "SBQQ__QuoteTerm__c",              label: "Quote Terms" },
+  { apiName: "SBQQ__QuoteProcess__c",           label: "Quote Process" },
+];
 const initialRecordId = params.get("recordId") || "";
 
 const SKIP_FIELDS = new Set(["CreatedById","LastModifiedById","SystemModstamp","IsDeleted","MasterRecordId"]);
@@ -32,7 +58,6 @@ const gridNav = {
 };
 
 const els = {
-  title:    document.getElementById("title"),
   subtitle: document.getElementById("subtitle"),
   status:   document.getElementById("status"),
   filter:   document.getElementById("filter"),
@@ -65,9 +90,31 @@ boot();
 // ── Boot ─────────────────────────────────────────────────────────────────
 
 async function boot() {
-  els.title.textContent = humanize(objectName);
   els.subtitle.textContent = host ? new URL(host).hostname.replace(".my.salesforce.com","") : "";
   if (!host) { setStatus("missing host — reopen from inspector panel", true); return; }
+
+  // Populate object switcher
+  const switcher = document.getElementById("objectSwitcher");
+  const knownApis = new Set(CPQ_OBJECTS.map(o => o.apiName));
+  if (!knownApis.has(objectName)) {
+    const opt = document.createElement("option");
+    opt.value = objectName; opt.textContent = humanize(objectName); opt.selected = true;
+    switcher.appendChild(opt);
+    const sep = document.createElement("option"); sep.disabled = true; sep.textContent = "──────────";
+    switcher.appendChild(sep);
+  }
+  CPQ_OBJECTS.forEach(o => {
+    const opt = document.createElement("option");
+    opt.value = o.apiName; opt.textContent = o.label;
+    if (o.apiName === objectName) opt.selected = true;
+    switcher.appendChild(opt);
+  });
+  switcher.addEventListener("change", () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("object", switcher.value);
+    url.searchParams.delete("recordId");
+    window.location.href = url.toString();
+  });
 
   els.filter.addEventListener("input", () => {
     clearTimeout(searchDebounce);
